@@ -24,7 +24,7 @@ find_project_root <- function(project_root = NULL) {
     return(normalizePath(project_root, winslash = "/", mustWork = TRUE))
   }
 
-  required_dirs <- c("Data")
+  required_files <- c("mortality_repro_functions.R", "transport_fpca_modular.R")
   candidates <- character(0)
   current <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
   candidates <- c(candidates, current)
@@ -34,9 +34,11 @@ find_project_root <- function(project_root = NULL) {
     candidates <- c(candidates, current)
   }
 
+  candidates <- c(candidates, file.path(candidates, "RealData", "Mortality"),
+                  file.path(candidates, "Code", "RealData", "Mortality"))
   for (candidate in unique(candidates)) {
-    has_required_dirs <- all(file.exists(file.path(candidate, required_dirs)))
-    if (isTRUE(has_required_dirs)) {
+    has_required_files <- all(file.exists(file.path(candidate, required_files)))
+    if (isTRUE(has_required_files)) {
       return(candidate)
     }
   }
@@ -46,6 +48,25 @@ find_project_root <- function(project_root = NULL) {
     "Set `project_root` manually near the top of the script.",
     call. = FALSE
   )
+}
+
+mortality_data_dir <- function(project_root) {
+  Sys.getenv("MORTALITY_DATA_DIR", unset = file.path(project_root, "Data"))
+}
+
+mortality_input_files <- function(project_root, sex = c("Female", "Male")) {
+  sex <- vapply(sex, normalize_sex, character(1))
+  files <- file.path(mortality_data_dir(project_root),
+                     c(paste0("Data_", sex, ".RData"),
+                       paste0("Data_raw_", tolower(sex), ".Rdata")))
+  missing <- files[!file.exists(files)]
+  if (length(missing)) {
+    stop("Mortality inputs are not distributed. Supply the files described in ",
+         "RealData/Mortality/README.md under its Data/ folder, or set ",
+         "MORTALITY_DATA_DIR. Missing: ", paste(basename(missing), collapse = ", "),
+         call. = FALSE)
+  }
+  files
 }
 
 ensure_dir <- function(path) {
@@ -119,7 +140,7 @@ sex_suffix <- function(sex) {
 }
 
 default_mean_output_filename <- function(sex) {
-  paste0("mean_", sex_suffix(sex), ".pdf")
+  paste0("mean_IN_", sex_suffix(sex), ".pdf")
 }
 
 default_country_output_filename <- function(sex) {
@@ -133,16 +154,6 @@ default_trajectory_output_filenames <- function(country_codes, sex) {
   )
 }
 
-default_legacy_trajectory_output_filenames <- function(sex) {
-  suffix <- sex_suffix(sex)
-  stats::setNames(
-    object = c(
-      paste0("bel_", suffix, ".html"),
-      paste0("blr_", suffix, ".html")
-    ),
-    nm = c("ESP", "BLR")
-  )
-}
 
 approx_vec <- function(xout, x, y) {
   stats::approx(x = x, y = y, xout = xout, rule = 2)$y
@@ -369,8 +380,9 @@ create_mortality_repro_context <- function(project_root = NULL,
   data_env <- new.env(parent = emptyenv())
   raw_env <- new.env(parent = emptyenv())
 
-  load(file.path(root, "Data", paste0("Data_", sex, ".RData")), envir = data_env)
-  load(file.path(root, "Data", paste0("Data_raw_", tolower(sex), ".Rdata")), envir = raw_env)
+  inputs <- mortality_input_files(root, sex)
+  load(inputs[1], envir = data_env)
+  load(inputs[2], envir = raw_env)
 
   data_q <- data_env$Data_q
   raw_object_name <- paste0("Data_", tolower(sex))
@@ -380,8 +392,24 @@ create_mortality_repro_context <- function(project_root = NULL,
     stop("Could not load the mortality data objects for sex = ", sex, call. = FALSE)
   }
 
+  if (!is.list(data_q) || !length(data_q) || !is.data.frame(raw_data) ||
+      !"country" %in% names(raw_data)) {
+    stop("Invalid mortality input schema; see RealData/Mortality/README.md.", call. = FALSE)
+  }
   country_codes <- unique(raw_data$country)
   n_times <- length(data_q[[1]])
+  if (length(country_codes) != length(data_q) || !n_times ||
+      any(lengths(data_q) != n_times)) {
+    stop("Data_q country/year dimensions do not match the raw country order.", call. = FALSE)
+  }
+  valid_quantile <- function(q) {
+    is.list(q) && is.numeric(q$x) && is.numeric(q$y) && length(q$x) > 1 &&
+      length(q$x) == length(q$y) && all(is.finite(q$x)) && all(is.finite(q$y)) &&
+      all(diff(q$x) > 0) && all(diff(q$y) >= 0)
+  }
+  if (!all(vapply(unlist(data_q, recursive = FALSE), valid_quantile, logical(1)))) {
+    stop("Each Data_q[[country]][[year]] must contain increasing x probabilities and nondecreasing y quantiles.", call. = FALSE)
+  }
   years <- seq.int(from = year_start, length.out = n_times)
   u_grid <- data_q[[1]][[1]]$x
   xgrid <- seq(min(data_q[[1]][[1]]$y), max(data_q[[1]][[1]]$y), length.out = length(data_q[[1]][[1]]$y))
@@ -421,7 +449,7 @@ fit_mortality_transport_fpca <- function(context,
                                          project_baselines = FALSE,
                                          u_cap = 0.999999,
                                          z_cap = NULL,
-                                         fpca_options = list(methodMuCovEst = "smooth", usergrid = TRUE)) {
+                                         fpca_options = list(methodMuCovEst = "smooth", usergrid = TRUE, methodSelectK = 3)) {
   time_list <- replicate(length(context$transport_list), context$years, simplify = FALSE)
 
   context$transport_module$fit_transport_fpca(
@@ -438,14 +466,17 @@ fit_mortality_transport_fpca <- function(context,
   )
 }
 
-compute_cumulative_fve_labels <- function(lambda, digits = 2) {
-  lambda <- lambda[is.finite(lambda)]
-  cumulative_fve <- cumsum(lambda) / sum(lambda)
+compute_cumulative_fve_labels <- function(fpca_fit, digits = 2) {
+  # lambda contains only retained PCs; dividing by its sum would force 100%.
+  cumulative_fve <- fpca_fit$cumFVE
+  if (is.null(cumulative_fve) || any(!is.finite(cumulative_fve))) {
+    stop("Fitted cumulative FVE is missing or invalid.", call. = FALSE)
+  }
   sprintf("%0.*f%%", digits, 100 * cumulative_fve)
 }
 
 build_mean_eigen_plot <- function(fit,
-                                  use_legacy_fve_labels = TRUE,
+                                  use_legacy_fve_labels = FALSE,
                                   legacy_fve_labels = c("93.76%", "98.21%", "99.53%"),
                                   eigen_sign_flip = c(-1, 1, -1),
                                   theme_name = "bw",
@@ -473,7 +504,7 @@ build_mean_eigen_plot <- function(fit,
     stop("Please provide three sign-flip values in `eigen_sign_flip`.", call. = FALSE)
   }
 
-  fve_labels <- compute_cumulative_fve_labels(fit$fpca_fit$lambda, digits = 2)[seq_len(n_components)]
+  fve_labels <- compute_cumulative_fve_labels(fit$fpca_fit, digits = 2)[seq_len(n_components)]
   if (isTRUE(use_legacy_fve_labels)) {
     fve_labels <- legacy_fve_labels
   }
@@ -515,7 +546,7 @@ build_mean_eigen_plot <- function(fit,
       linewidth = eigen_line_width
     ) +
     ggplot2::coord_cartesian(ylim = y_limits) +
-    ggplot2::labs(x = x_label, y = y_label, color = "FVE") +
+    ggplot2::labs(x = x_label, y = y_label, color = "Cumulative FVE") +
     ggplot2::scale_color_manual(values = stats::setNames(eigen_colors, fve_labels)) +
     base_theme +
     ggplot2::theme(
@@ -778,13 +809,13 @@ run_mean_eigen_figure <- function(context = NULL,
                                   project_root = NULL,
                                   output_dir = NULL,
                                   output_filename = NULL,
-                                  kappa = 2000,
-                                  latent = TRUE,
+                                  kappa = 500,
+                                  latent = FALSE,
                                   method_xi = "IN",
                                   project_baselines = FALSE,
                                   u_cap = 0.999999,
                                   z_cap = NULL,
-                                  use_legacy_fve_labels = TRUE,
+                                  use_legacy_fve_labels = FALSE,
                                   legacy_fve_labels = c("93.76%", "98.21%", "99.53%"),
                                   eigen_sign_flip = c(-1, 1, -1),
                                   theme_name = "bw",
@@ -849,7 +880,7 @@ run_mean_eigen_figure <- function(context = NULL,
     legend_position = legend_position
   )
 
-  output_dir <- output_dir %||% file.path(context$project_root,  "output")
+  output_dir <- output_dir %||% file.path(context$project_root, "output", "estimator13_IN")
   output_dir <- ensure_dir(output_dir)
   output_filename <- output_filename %||% default_mean_output_filename(context$sex)
   output_path <- file.path(output_dir, output_filename)
@@ -920,7 +951,7 @@ run_country_sign_figure <- function(context = NULL,
     legend_position = legend_position
   )
 
-  output_dir <- output_dir %||% file.path(context$project_root,  "output")
+  output_dir <- output_dir %||% file.path(context$project_root, "output", "estimator13_IN")
   output_dir <- ensure_dir(output_dir)
   output_filename <- output_filename %||% default_country_output_filename(context$sex)
   output_path <- file.path(output_dir, output_filename)
@@ -953,7 +984,7 @@ run_trajectory_html_figures <- function(context = NULL,
                                         output_filenames = NULL,
                                         kappa = 500,
                                         latent = FALSE,
-                                        method_xi = "CE",
+                                        method_xi = "IN",
                                         project_baselines = FALSE,
                                         u_cap = 0.999999,
                                         z_cap = NULL,
@@ -1022,12 +1053,12 @@ run_trajectory_html_figures <- function(context = NULL,
     project_function = context$transport_module$project_transport
   )
 
-  output_dir <- output_dir %||% file.path(context$project_root,  "output")
+  output_dir <- output_dir %||% file.path(context$project_root, "output", "estimator13_IN")
   output_dir <- ensure_dir(output_dir)
 
   if (is.null(output_filenames) && is.null(country_codes)) {
-    output_filenames <- default_legacy_trajectory_output_filenames(context$sex)
-    country_codes <- names(output_filenames)
+    country_codes <- c("ESP", "BLR")
+    output_filenames <- default_trajectory_output_filenames(country_codes, context$sex)
   } else {
     country_codes <- country_codes %||% names(output_filenames)
     output_filenames <- output_filenames %||% default_trajectory_output_filenames(country_codes, context$sex)

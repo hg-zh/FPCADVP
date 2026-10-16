@@ -8,25 +8,24 @@
 #SBATCH -o para_R2_prop.out
 #SBATCH -t 120:00:00
 
-# Run from the submission directory
-cd "$SLURM_SUBMIT_DIR"
-
-# Avoid thread over-subscription if BLAS/OpenMP are multithreaded
-export OMP_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export VECLIB_MAXIMUM_THREADS=1
-export NUMEXPR_NUM_THREADS=1
-
-module load r/4.5.0
-
-
-Rscript para_R2_mse_t_refined.R \
-  outdir=Res_LatentF_CE_095_8_b075_beta063 \
-  reps=200 seed_base=2000 t_design=random \
-  latent=F methodXi=CE \
-  decayR=0.75 \
-  save_mse_t=TRUE save_mse_plots=FALSE t_grid_len=51 mse_rep_only=NA \
-  eps_u=0.05 u_cap=0.95 Z_cap=8 \
-  "beta_a=0.6,3" \
-  "beta_b=0.6,3"
+# Compatibility launcher for the published proposed latent CE in both settings.
+# Submit from the repository root, Code root, or this script's directory.
+set -euo pipefail
+submit_dir="${SLURM_SUBMIT_DIR:-$PWD}"
+code_dir="${SIMULATION_CODE_DIR:-}"
+if [[ -z "$code_dir" ]]; then
+  for candidate in "$submit_dir/Code/Simulation/parallel_run" "$submit_dir/Simulation/parallel_run" "$submit_dir"; do
+    if [[ -f "$candidate/para_R2_mse_t_refined.R" ]]; then code_dir="$candidate"; break; fi
+  done
+fi
+if [[ -z "$code_dir" || ! -f "$code_dir/para_R2_mse_t_refined.R" ]]; then
+  echo "Cannot locate simulation code; set SIMULATION_CODE_DIR." >&2
+  exit 2
+fi
+cd "$code_dir"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+# Load a site-specific module only when requested; otherwise use Rscript on PATH.
+if [[ -n "${R_MODULE:-}" ]]; then module load "$R_MODULE"; fi
+command -v Rscript >/dev/null || { echo "Rscript is unavailable" >&2; exit 2; }
+bash "run_proposed_latent_CE.sbatch"

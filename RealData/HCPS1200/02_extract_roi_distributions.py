@@ -314,7 +314,7 @@ def process_member(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract ROI quantiles from HCP CIFTI dtseries.")
-    parser.add_argument("--root", type=Path, default=Path("."), help="Project root.")
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent, help="Application data/output root (default: script directory).")
     parser.add_argument(
         "--max-subjects",
         type=int,
@@ -371,6 +371,8 @@ def main() -> None:
 
     motor_dir = root / "HCP_Data" / "MotorTask"
     rest_dir = root / "HCP_Data" / "RestingState"
+    if not motor_dir.is_dir() or not rest_dir.is_dir():
+        raise FileNotFoundError("Supply HCP_Data/MotorTask and HCP_Data/RestingState under --root; see the application README.")
     motor = collect_subjects(motor_dir, MOTOR_RE)
     rest = collect_subjects(rest_dir, REST_RE)
     overlap = sorted(set(motor) & set(rest))

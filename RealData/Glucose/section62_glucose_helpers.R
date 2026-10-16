@@ -38,10 +38,17 @@ glucose_transport_from_mean_cdf <- function(mean_cdf, prob_grid, subject_quantil
 }
 
 glucose_load_data <- function(data_path, day_window = 10) {
+  if (!file.exists(data_path)) {
+    stop("Glucose input data_1.csv is not distributed. Supply it under ",
+         "RealData/Glucose/Data/ or set GLUCOSE_DATA_FILE; see the application README.",
+         call. = FALSE)
+  }
   data_raw <- read.csv(data_path, stringsAsFactors = FALSE)
-  # Match the legacy Section 6.2 preprocessing, which parsed timestamps in the
-  # local R session timezone before converting to study-day offsets.
-  data_raw$time <- as.POSIXct(data_raw$time)
+  if (!all(c("id", "time", "gl") %in% names(data_raw))) {
+    stop("Glucose CSV requires id, time, and gl columns; see the application README.", call. = FALSE)
+  }
+  # Fix the timezone used in the recorded run so relocation cannot change study days.
+  data_raw$time <- as.POSIXct(data_raw$time, tz = Sys.getenv("GLUCOSE_TIMEZONE", "America/Chicago"))
   data_raw$gl <- suppressWarnings(as.numeric(data_raw$gl))
   data_raw <- stats::na.omit(data_raw)
 
@@ -50,7 +57,7 @@ glucose_load_data <- function(data_path, day_window = 10) {
 
   for (i in seq_along(subject_ids)) {
     idx <- data_raw$id == subject_ids[i]
-    dates <- as.Date(data_raw$time[idx])
+    dates <- as.Date(data_raw$time[idx], tz = "UTC")
     data_raw$time_res[idx] <- as.numeric(dates - dates[1])
   }
 

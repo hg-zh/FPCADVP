@@ -1,20 +1,29 @@
-# Reproduces the female mean/eigenfunction figure.
-# Legacy reference: old code/Final_mean_eig.R -> old figure/mean_F.pdf
-# Paper/supplement reference: DP-JRSSB-RR1/Fig/m_e_f.pdf
+# Direct-U mean/eigenfunctions for estimator (13), with fitted cumulative FVE.
 
 # =========================
 # Parameters
 # =========================
 
-project_root <- NULL
-helper_file <- file.path( "mortality_repro_functions.R")
+# Resolve adjacent files from the entrypoint, independently of the working directory.
+script_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+if (length(script_file)) {
+  script_file <- sub("^--file=", "", script_file[1])
+} else {
+  script_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (is.null(script_file) && requireNamespace("rstudioapi", quietly = TRUE)) {
+    script_file <- rstudioapi::getSourceEditorContext()$path
+  }
+}
+if (is.null(script_file) || !nzchar(script_file)) stop("Run this file with Rscript or Source.")
+project_root <- dirname(normalizePath(gsub("~+~", " ", script_file, fixed = TRUE), mustWork = TRUE))
+helper_file <- file.path(project_root, "mortality_repro_functions.R")
 sex <- "Female"
-output_dir <- file.path( "output")
-output_filename <- if (tolower(sex) == "female") "mean_F.pdf" else "mean_M.pdf"
+output_dir <- file.path(dirname(helper_file), "output", "estimator13_IN")
+output_filename <- if (tolower(sex) == "female") "mean_IN_F.pdf" else "mean_IN_M.pdf"
 
 # Proposed-method settings
-kappa <- 2000
-latent <- TRUE
+kappa <- 500
+latent <- FALSE
 method_xi <- "IN"
 project_baselines <- FALSE
 u_cap <- 0.999999
@@ -24,7 +33,7 @@ z_cap <- NULL
 plot_width <- 500 / 72
 plot_height <- 400 / 72
 use_cairo_pdf <- TRUE
-use_legacy_fve_labels <- TRUE
+use_legacy_fve_labels <- FALSE
 legacy_fve_labels <- c("93.76%", "98.21%", "99.53%")
 eigen_sign_flip <- c(-1, 1, -1)
 theme_name <- "bw"

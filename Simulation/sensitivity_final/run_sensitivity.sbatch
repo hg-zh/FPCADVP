@@ -14,7 +14,12 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   exit 2
 fi
 
-code_dir_input="${SENSITIVITY_CODE_DIR:-${SLURM_SUBMIT_DIR:-}}"
+code_dir_input="${SENSITIVITY_CODE_DIR:-}"
+if [[ -z "$code_dir_input" ]]; then
+  for candidate in "${SLURM_SUBMIT_DIR}/Code/Simulation/sensitivity_final" "${SLURM_SUBMIT_DIR}/Simulation/sensitivity_final" "${SLURM_SUBMIT_DIR}"; do
+    if [[ -f "$candidate/run_sensitivity.R" ]]; then code_dir_input="$candidate"; break; fi
+  done
+fi
 if [[ -z "${code_dir_input}" || ! -d "${code_dir_input}" ]]; then
   echo "ERROR: set SENSITIVITY_CODE_DIR to the sensitivity_final directory." >&2
   exit 3
@@ -34,7 +39,7 @@ if [[ ! -w "${RESULTS_ROOT}" || ! -w "${LOG_ROOT}" ]]; then
   exit 3
 fi
 
-module_input="${TRANSPORT_FPCA_MODULE:-${CODE_DIR}/../Simulation/parallel_run/transport_fpca_modular.R}"
+module_input="${TRANSPORT_FPCA_MODULE:-${CODE_DIR}/../parallel_run/transport_fpca_modular.R}"
 if [[ "${module_input}" != /* ]]; then
   module_input="${CODE_DIR}/${module_input}"
 fi
@@ -75,8 +80,34 @@ case "${RUN_TYPE}" in
     ;;
 esac
 
-readonly RUN_ID="${RUN_TYPE}_${SLURM_JOB_ID}"
-readonly RUN_DIR="${RESULTS_ROOT}/${RUN_ID}"
+readonly METHOD_XI="${METHOD_XI:-IN}"
+readonly LATENT="${LATENT:-FALSE}"
+case "${LATENT}:${METHOD_XI}" in
+  FALSE:CE)
+    readonly PROCEDURE_DIR="direct_U_CE"
+    readonly RUN_ID="${RUN_TYPE}_${SLURM_JOB_ID}"
+    readonly TABLE_NAME="sensitivity_table.tex"
+    ;;
+  FALSE:IN)
+    readonly PROCEDURE_DIR="estimator13_IN"
+    readonly RUN_ID="${RUN_TYPE}_IN_${SLURM_JOB_ID}"
+    readonly TABLE_NAME="sensitivity_table_in.tex"
+    ;;
+  TRUE:CE)
+    readonly PROCEDURE_DIR="estimator14_CE"
+    readonly RUN_ID="${RUN_TYPE}_latent_CE_${SLURM_JOB_ID}"
+    readonly TABLE_NAME="sensitivity_table_latent_ce.tex"
+    ;;
+  *)
+    echo "ERROR: supported LATENT:METHOD_XI combinations are FALSE:CE, FALSE:IN, TRUE:CE; got '${LATENT}:${METHOD_XI}'." >&2
+    exit 2
+    ;;
+esac
+if [[ "$RUN_TYPE" == "smoke" ]]; then
+  readonly RUN_DIR="${RESULTS_ROOT}/smoke_${PROCEDURE_DIR}"
+else
+  readonly RUN_DIR="${RESULTS_ROOT}/${PROCEDURE_DIR}"
+fi
 if [[ -e "${RUN_DIR}" ]]; then
   echo "ERROR: refusing to overwrite existing run directory: ${RUN_DIR}" >&2
   exit 3
@@ -91,17 +122,17 @@ finish() {
     mkdir -p "${RUN_DIR}"
     if (( status == 0 )); then
       if [[ "${COMPLETION_KIND}" == "FIT_FAILURES" ]]; then
-        printf 'run_id=%s\njob_id=%s\nrun_type=%s\nstatus=complete_with_fit_failures\ncompleted_utc=%s\n' \
-          "${RUN_ID}" "${SLURM_JOB_ID}" "${RUN_TYPE}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        printf 'run_id=%s\njob_id=%s\nrun_type=%s\nlatent=%s\nmethodXi=%s\nstatus=complete_with_fit_failures\ncompleted_utc=%s\n' \
+          "${RUN_ID}" "${SLURM_JOB_ID}" "${RUN_TYPE}" "${LATENT}" "${METHOD_XI}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           > "${RUN_DIR}/_COMPLETE_WITH_FIT_FAILURES"
       else
-        printf 'run_id=%s\njob_id=%s\nrun_type=%s\nstatus=complete\ncompleted_utc=%s\n' \
-          "${RUN_ID}" "${SLURM_JOB_ID}" "${RUN_TYPE}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        printf 'run_id=%s\njob_id=%s\nrun_type=%s\nlatent=%s\nmethodXi=%s\nstatus=complete\ncompleted_utc=%s\n' \
+          "${RUN_ID}" "${SLURM_JOB_ID}" "${RUN_TYPE}" "${LATENT}" "${METHOD_XI}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           > "${RUN_DIR}/_SUCCESS"
       fi
     else
-      printf 'run_id=%s\njob_id=%s\nrun_type=%s\nexit_status=%s\nfailed_utc=%s\n' \
-        "${RUN_ID}" "${SLURM_JOB_ID}" "${RUN_TYPE}" "${status}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      printf 'run_id=%s\njob_id=%s\nrun_type=%s\nlatent=%s\nmethodXi=%s\nexit_status=%s\nfailed_utc=%s\n' \
+        "${RUN_ID}" "${SLURM_JOB_ID}" "${RUN_TYPE}" "${LATENT}" "${METHOD_XI}" "${status}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         > "${RUN_DIR}/_FAILED"
     fi
   fi
@@ -168,8 +199,8 @@ Rscript run_sensitivity.R \
   seed_base=2000 \
   setting=1 \
   decayR=1 \
-  latent=FALSE \
-  methodXi=CE \
+  latent="${LATENT}" \
+  methodXi="${METHOD_XI}" \
   t_design=random \
   t_grid_len=51 \
   eps_u=0.05 \
@@ -186,7 +217,7 @@ readonly AGGREGATOR_SHA256="$(sha256sum "${CODE_DIR}/aggregate_results.R" | awk 
 readonly TABLE_SHA256="$(sha256sum "${CODE_DIR}/generate_table.R" | awk '{print $1}')"
 readonly BATCH_SHA256="$(sha256sum "${CODE_DIR}/run_sensitivity.sbatch" | awk '{print $1}')"
 readonly MODULE_SHA256="$(sha256sum "${MODULE_SCRIPT}" | awk '{print $1}')"
-ACTUAL_TIME_LIMIT="$(squeue -h -j "${SLURM_JOB_ID}" -o '%l' 2>/dev/null || true)"
+ACTUAL_TIME_LIMIT="$(squeue -a -h -j "${SLURM_JOB_ID}" -o '%l' 2>/dev/null || true)"
 if [[ -z "${ACTUAL_TIME_LIMIT}" ]]; then
   ACTUAL_TIME_LIMIT="${SLURM_TIMELIMIT:-<unavailable>}"
 fi
@@ -195,6 +226,8 @@ readonly ACTUAL_TIME_LIMIT
 cat > "${RUN_DIR}/batch_manifest.txt" <<EOF
 run_id=${RUN_ID}
 run_type=${RUN_TYPE}
+latent=${LATENT}
+methodXi=${METHOD_XI}
 job_id=${SLURM_JOB_ID}
 job_name=${SLURM_JOB_NAME:-sensitivity}
 partition=${SLURM_JOB_PARTITION:-<unspecified>}
@@ -223,7 +256,7 @@ run_sensitivity_sbatch_sha256=${BATCH_SHA256}
 transport_fpca_modular_sha256=${MODULE_SHA256}
 EOF
 
-echo "Starting ${RUN_TYPE} sensitivity run ${RUN_ID}."
+echo "Starting ${RUN_TYPE} sensitivity run ${RUN_ID} with latent=${LATENT}, methodXi=${METHOD_XI}."
 echo "Results will be written to ${RUN_DIR}."
 
 Rscript run_sensitivity.R \
@@ -240,8 +273,8 @@ Rscript run_sensitivity.R \
   seed_base=2000 \
   setting=1 \
   decayR=1 \
-  latent=FALSE \
-  methodXi=CE \
+  latent="${LATENT}" \
+  methodXi="${METHOD_XI}" \
   t_design=random \
   t_grid_len=51 \
   eps_u=0.05 \
@@ -271,9 +304,11 @@ Rscript aggregate_results.R \
   input_dir="${RUN_DIR}" \
   outdir="${RUN_DIR}/aggregated" \
   mode="${RUN_TYPE}" \
+  latent="${LATENT}" \
+  methodXi="${METHOD_XI}" \
   strict=TRUE \
   write_table="${WRITE_TABLE}" \
-  table_out="${RUN_DIR}/aggregated/sensitivity_table.tex"
+  table_out="${RUN_DIR}/aggregated/${TABLE_NAME}"
 
 if grep -qx 'status=COMPLETE_WITH_FIT_FAILURES' "${RUN_DIR}/aggregated/numerical_status.txt"; then
   COMPLETION_KIND="FIT_FAILURES"

@@ -3,7 +3,7 @@
 # Minimal RStudio-friendly fit script for the HCP eigentransport analysis.
 # Dependencies:
 #   1. data_processed/hcp_transport_objects.rds
-#   2. proposed_method/transport_fpca_modular.R
+#   2. transport_fpca_modular.R
 # Output:
 #   outputs/hcp_transport_fpca_fits.rds
 
@@ -16,17 +16,32 @@ method_script <- NULL
 output_fit_rds <- NULL
 
 
-project_root <- "/Users/hangzhou/Documents/research/Hans/random object/JRSSB_RR1/Final_Code/RealData/HCPS1200"
-setwd(project_root)
+# Paths default to this application directory, regardless of the working directory.
+script_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+if (length(script_file)) {
+  script_file <- sub("^--file=", "", script_file[1])
+} else {
+  script_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (is.null(script_file) && requireNamespace("rstudioapi", quietly = TRUE)) {
+    script_file <- rstudioapi::getSourceEditorContext()$path
+  }
+}
+if (is.null(script_file) || !nzchar(script_file)) stop("Run this file with Rscript or Source.")
+script_dir <- dirname(normalizePath(gsub("~+~", " ", script_file, fixed = TRUE), mustWork = TRUE))
+source(file.path(script_dir, "hcp_paths.R"))
+kv <- hcp_parse_args(commandArgs(trailingOnly = TRUE))
+project_root <- kv$root %||% script_dir
+hcp_path <- function(path) hcp_resolve_path(path, project_root)
+
 
 if (is.null(input_transport_rds)) {
-  input_transport_rds <- file.path(project_root, "data_processed", "hcp_transport_objects.rds")
+  input_transport_rds <- hcp_path(kv$input_transport_rds %||% "data_processed/hcp_transport_objects.rds")
 }
 if (is.null(method_script)) {
-  method_script <- file.path(project_root, "transport_fpca_modular.R")
+  method_script <- if (is.null(kv$method_script)) file.path(script_dir, "transport_fpca_modular.R") else hcp_path(kv$method_script)
 }
 if (is.null(output_fit_rds)) {
-  output_fit_rds <- file.path(project_root, "outputs", "hcp_transport_fpca_fits.rds")
+  output_fit_rds <- hcp_path(kv$output_fit_rds %||% "outputs/hcp_transport_fpca_fits.rds")
 }
 
 log_file <- file.path(project_root, "logs", "run_hcp_eigentransport_fit.log")
@@ -43,7 +58,7 @@ log_msg <- function(...) {
 }
 
 if (!file.exists(input_transport_rds)) {
-  stop("Missing transport object file: ", input_transport_rds)
+  stop("Missing transport object file: ", input_transport_rds, ". Run 03_build_transports.R first; see the application README.")
 }
 if (!file.exists(method_script)) {
   stop("Missing proposed method script: ", method_script)
@@ -109,4 +124,4 @@ saveRDS(
 )
 
 log_msg("Saved fitted object to ", output_fit_rds)
-log_msg("Next step: source('scripts/make_hcp_eigentransport_modes.R') to rebuild the figure.")
+log_msg("Next step: Rscript RealData/HCPS1200/make_hcp_eigentransport_modes.R (pass the same root= override if used).")

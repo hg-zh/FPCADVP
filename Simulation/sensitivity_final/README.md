@@ -5,6 +5,30 @@ transport-FPCA method. It compares Gaussian, Epanechnikov, and quartic temporal
 smoothing kernels over joint bandwidth multipliers
 \(c_h\in\{0.50,0.75,1.00,1.25,1.50\}\).
 
+Three procedure settings are supported:
+
+- `latent=FALSE, methodXi=IN`: FPCA and numerical-integration scores on U,
+  associated with the dense construction in (13). This is presented first in
+  Table S.1, using the representative cell n=100, N=20, m=200. fdapace uses
+  trapezoidal integration of centered observations against estimated
+  eigenfunctions, a numerical alternative to the uniform-design empirical
+  average displayed in the paper.
+- `latent=TRUE, methodXi=CE`: FPCA and conditional-expectation scores on
+  Z=g^{-1}(U), followed by reconstruction through g, associated with (14).
+  This is presented second in Table S.2, using n=100, N=5, m=200.
+- `latent=FALSE, methodXi=CE`: the historical direct-U conditional-expectation
+  analysis, available as an optional diagnostic. It shares the
+  score-prediction principle of (14) but omits its latent-Z transformation;
+  it is no longer a displayed sensitivity table in the supplement.
+
+Procedures are run and summarized separately using the same simulation seeds,
+and both displayed tables include summaries across all 20 cells. The code uses
+the generator's common target baseline norm; subsequent transport projection
+can alter the realized subject norms, which are recorded in the diagnostics.
+The numerical implementations retain `u_cap=0.95` and `Z_cap=8` (the latter is
+active only for the latent procedure). These are regularized implementations
+of the constructions discussed in the paper.
+
 ## Design
 
 The full study uses 200 Monte Carlo replications at each of 20 cells formed by
@@ -12,132 +36,107 @@ The full study uses 200 Monte Carlo replications at each of 20 cells formed by
 Within a cell and replication, one simulated data set is shared by all 15
 kernel--bandwidth configurations.
 
-The untouched fdapace default is the Gaussian \(c_h=1\) reference. The explicit
+Within each procedure, the untouched fdapace kernel/bandwidth default is
+the Gaussian \(c_h=1\) reference. The explicit
 Gaussian reference bandwidths are multiplied by \(c_h\) and by a
 second-moment normalization factor: 1 for Gaussian, \(\sqrt{5}\) for
 Epanechnikov, and \(\sqrt{7}\) for quartic. Thus, each compactly supported
 kernel is compared at the same second-moment bandwidth scale as the Gaussian
 kernel.
 
-## Placement and requirements
+## Requirements and paths
 
-Place this directory directly under the project Code directory:
+Keep the distributed `Simulation/sensitivity_final` and `Simulation/parallel_run`
+directories beside each other; no directories need moving. Commands below run
+from the public repository root containing `Simulation/` and `RealData/`. If using
+the manuscript workspace, first run `cd Code` once. The scripts resolve their
+dependency relative to their own location.
 
-~~~text
-Code/
-├── Simulation/
-│   └── parallel_run/
-│       └── transport_fpca_modular.R
-└── sensitivity_final/
-    ├── README.md
-    ├── run_sensitivity.R
-    ├── run_sensitivity.sbatch
-    ├── aggregate_results.R
-    └── generate_table.R
-~~~
+The exact simulation environment is R 4.5.0 and fdapace 0.6.0. Preflight checks
+both versions and the unmodified transport-FPCA module checksum. The Slurm batch
+workflow requires Bash, `sha256sum`, `awk`, `grep`, and `squeue`. The simulation
+workload requires a Slurm allocation; preflight and table generation run locally.
+The full-run request is one node, one task, 50 CPUs, 570 GB, and 120 hours.
+Account, partition, node, installation directories, and module names are not
+hardcoded. Supply cluster-specific account/partition options to `sbatch` if your
+site requires them. Set `R_MODULE` only if R must be loaded through a module;
+otherwise the launcher uses `Rscript` from `PATH`.
 
-The simulation depends on
-../Simulation/parallel_run/transport_fpca_modular.R. The driver verifies that
-this file has MD5 checksum 4beac3d60a2b3e8850037ea7993abc05. Its corresponding
-SHA-256 checksum is
-8018f71201c95e8f5321a9faefd65f57f6331162f3a76f6f9bacb24f963c1db0.
+```bash
+Rscript Simulation/sensitivity_final/run_sensitivity.R mode=full latent=FALSE methodXi=IN check_only=TRUE
+Rscript Simulation/sensitivity_final/run_sensitivity.R mode=full latent=TRUE methodXi=CE check_only=TRUE
+```
 
-Required software is R 4.5.0, fdapace 0.6.0, Bash, and Slurm. The batch script
-also uses sha256sum, awk, grep, and squeue. The requested full-run resources
-are one node, one task, 50 CPUs, 570 GB of memory, and 120 hours. The partition
-and account are intentionally left to the cluster defaults; add the appropriate
-sbatch options if the cluster requires them.
+## Full simulation and aggregation
 
-From Code/sensitivity_final, run this lightweight preflight before submission:
+The source-only distribution contains no data files or saved simulation results.
+The simulated inputs are generated internally from the seeds and settings below.
+Submit the two studies separately:
 
-~~~bash
-module load r/4.5.0
-Rscript run_sensitivity.R mode=full check_only=TRUE
-~~~
+```bash
+sbatch --export=ALL,RUN_TYPE=full,LATENT=FALSE,METHOD_XI=IN Simulation/sensitivity_final/run_sensitivity.sbatch
+sbatch --export=ALL,RUN_TYPE=full,LATENT=TRUE,METHOD_XI=CE Simulation/sensitivity_final/run_sensitivity.sbatch
+```
 
-## Slurm execution
+The batch script automatically validates and aggregates each completed run.
+Default output directories are `results/estimator13_IN` and
+`results/estimator14_CE` beneath this directory. They do not depend on a job ID.
+The default procedure is estimator (13); specify `LATENT=TRUE,METHOD_XI=CE` for
+estimator (14). The optional direct-U CE diagnostic uses
+`LATENT=FALSE,METHOD_XI=CE` and writes `results/direct_U_CE`.
 
-Create the output directories and submit the full study from
-Code/sensitivity_final:
+An existing output directory is never overwritten. To repeat a completed run,
+use a new output root; for example:
 
-~~~bash
-mkdir -p logs results
-sbatch \
-  --output="$PWD/logs/%x_%j.out" \
-  --error="$PWD/logs/%x_%j.err" \
-  --export=ALL,R_MODULE=r/4.5.0,SENSITIVITY_CODE_DIR="$PWD",SENSITIVITY_OUTPUT_ROOT="$PWD",SENSITIVITY_LOG_ROOT="$PWD/logs",RUN_TYPE=full \
-  run_sensitivity.sbatch
-~~~
+```bash
+sbatch --export=ALL,SENSITIVITY_OUTPUT_ROOT="$PWD/recomputed_sensitivity",RUN_TYPE=full,LATENT=FALSE,METHOD_XI=IN Simulation/sensitivity_final/run_sensitivity.sbatch
+```
 
-If the R module has a different name, change R_MODULE. If R 4.5.0 is already
-available without an environment module, omit R_MODULE from --export.
+For an installation check, replace `RUN_TYPE=full` with `RUN_TYPE=smoke` and
+request smaller resources, e.g. `--cpus-per-task=2 --mem=8G --time=01:00:00`.
+Smoke mode uses two replications at n=20, N=3, m=200 and all 15 configurations.
+Smoke results are written to `results/smoke_estimator13_IN` or
+`results/smoke_estimator14_CE`; these do not reproduce the supplement tables.
 
-After submission, substitute the reported identifier below:
+Repeat strict aggregation into a new output directory, if desired:
 
-~~~bash
-JOB_ID=REPORTED_IDENTIFIER
-squeue -j "$JOB_ID"
-tail -f "logs/sensitivity_$JOB_ID.out"
-~~~
+```bash
+Rscript Simulation/sensitivity_final/aggregate_results.R input_dir=Simulation/sensitivity_final/results/estimator13_IN outdir=Simulation/sensitivity_final/results/estimator13_IN/aggregated_manual mode=full latent=FALSE methodXi=IN strict=TRUE write_table=FALSE
+```
 
-The simulation workload is guarded against execution outside Slurm. A
-RUN_TYPE=smoke submission uses two replications at \(n=20\), \(N=3\), and
-\(m=200\), but the full supplement table is produced only from RUN_TYPE=full.
-When using smoke mode, override --cpus-per-task, --mem, and --time at submission
-with smaller values appropriate for the cluster; otherwise the full-run Slurm
-directives remain in effect.
+Use `estimator14_CE`, `latent=TRUE`, and `methodXi=CE` for the other study.
+Aggregation requires the full replication files, configuration, metadata, and
+completion marker. The following table-rendering commands use the aggregate
+summaries generated by the completed full workflow above.
 
-## Aggregation and table reproduction
+## Reproduce Tables S.1 and S.2 from the generated summaries
 
-The batch script automatically validates and aggregates a completed run. To
-repeat aggregation into a new directory without changing the run output:
+After both full runs and their automatic aggregation have completed:
 
-~~~bash
-RUN_DIR="results/full_REPORTED_IDENTIFIER"
-Rscript aggregate_results.R \
-  input_dir="$RUN_DIR" \
-  outdir="$RUN_DIR/aggregated_manual" \
-  mode=full \
-  strict=TRUE \
-  write_table=FALSE
-~~~
+```bash
+mkdir -p Simulation/sensitivity_final/reproduced_tables
+Rscript Simulation/sensitivity_final/generate_table.R summary_dir=Simulation/sensitivity_final/results/estimator13_IN/aggregated table_out=Simulation/sensitivity_final/reproduced_tables/sensitivity_table_in.tex
+Rscript Simulation/sensitivity_final/generate_table.R summary_dir=Simulation/sensitivity_final/results/estimator14_CE/aggregated table_out=Simulation/sensitivity_final/reproduced_tables/sensitivity_table_latent_ce.tex
+```
 
-Aggregation refuses a nonempty output directory. Regenerate the final LaTeX
-table from the four summary CSV files:
+The renderer validates procedure labels and the full design using
+`summary_by_cell.csv`, `paired_summary_by_cell.csv`,
+`summary_across_cells.csv`, and `failure_summary_by_config.csv`. It refuses to
+overwrite an existing table; use a new `table_out` for a second rendering.
 
-~~~bash
-Rscript generate_table.R \
-  summary_dir="$RUN_DIR/aggregated_manual" \
-  table_out="$RUN_DIR/sensitivity_table.tex"
-~~~
+## Randomness and recorded outputs
 
-Table generation requires summary_by_cell.csv,
-paired_summary_by_cell.csv, summary_across_cells.csv, and
-failure_summary_by_config.csv. It validates the complete design and refuses to
-overwrite an existing table.
+The cell seed is `2000 + 1000000*r + 1000*n + 10*N + m`. All 15 configurations
+reuse that cell's simulated data. Full runs contain 200 replications over 20
+cells, hence 60,000 planned fits per procedure, with Gaussian/Epanechnikov/quartic
+kernels and bandwidth multipliers 0.50, 0.75, 1.00, 1.25, 1.50. Setting 1 uses
+Beta bounds (0.6,3) for both shape parameters, `decayR=1`, random observation
+times, 128 transport-grid points, 51 time-evaluation points, and 50 generating
+basis functions. Numerical settings are `eps_u=0.05`, `u_cap=0.95`, `Z_cap=8`.
 
-## Reproducibility and outputs
-
-The random seed for replication \(r\) and cell \((n,N,m)\) is
-
-\[
-2000 + 10^6 r + 1000n + 10N + m.
-\]
-
-All 15 configurations reuse that cell's simulated data, so paired comparisons
-do not introduce independent Monte Carlo variation. The driver records the R
-and fdapace versions, dependency checksum, configuration, session information,
-and run manifest. Replication files are written atomically.
-
-A full run is stored under results/full_JOB_ID and contains:
-
-- replications/rep_001.rds through replications/rep_200.rds;
-- raw_results.rds and raw_results.csv;
-- run_config.rds, run_config.csv, run metadata, and sessionInfo.txt;
-- batch_manifest.txt and completion markers;
-- aggregated validation reports, numerical-status files, cell summaries,
-  paired summaries, failure summaries, and sensitivity_table.tex.
-
-Strict aggregation distinguishes structural validity from numerical fit
-failures. Compact-kernel failures remain visible in the failure summaries and
-table; they do not silently disappear from the planned-fit counts.
+Full runs record replication-level results, run configuration, package versions,
+module checksum, fit failures, and validation reports. Strict aggregation
+distinguishes structural completeness from numerical fit failures. Compact-kernel
+failures remain in the planned-fit counts and table summaries; no failed cell is
+silently omitted. Historical execution records are preserved outside the active
+public workflow and are not required by any reproduction command.

@@ -1,34 +1,39 @@
-# Reproduces the female 3D transport trajectory HTML files.
-# Legacy reference: old code/Individual_illu.R -> old figure/bel_F.html and old figure/blr_F.html
-#
-# Note:
-# In the legacy script, `bel_F.html` was saved from `Pos_fig[[3]]`, which
-# corresponds to Spain (`ESP`) rather than Belgium (`BEL`). The defaults below
-# mirror the archived HTML files exactly. Edit `legacy_output_country_map` if
-# you want filenames that match the country codes instead.
+# Direct-U IN transport trajectories (estimator 13).
+# The archived bel_F.html contains ESP (Spain); new filenames use true country codes.
 
 # =========================
 # Parameters
 # =========================
 
-project_root <- NULL
-helper_file <- file.path("mortality_repro_functions.R")
+# Resolve adjacent files from the entrypoint, independently of the working directory.
+script_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+if (length(script_file)) {
+  script_file <- sub("^--file=", "", script_file[1])
+} else {
+  script_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (is.null(script_file) && requireNamespace("rstudioapi", quietly = TRUE)) {
+    script_file <- rstudioapi::getSourceEditorContext()$path
+  }
+}
+if (is.null(script_file) || !nzchar(script_file)) stop("Run this file with Rscript or Source.")
+project_root <- dirname(normalizePath(gsub("~+~", " ", script_file, fixed = TRUE), mustWork = TRUE))
+helper_file <- file.path(project_root, "mortality_repro_functions.R")
 sex <- "Female"
-output_dir <- file.path("output")
+output_dir <- file.path(dirname(helper_file), "output", "estimator13_IN")
 
 # Countries and output files
 sex_tag <- if (tolower(sex) == "female") "F" else "M"
-legacy_output_country_map <- c(
-  ESP = paste0("bel_", sex_tag, ".html"),
+output_country_map <- c(
+  ESP = paste0("esp_", sex_tag, ".html"),
   BLR = paste0("blr_", sex_tag, ".html")
 )
-country_codes <- names(legacy_output_country_map)
-output_filenames <- legacy_output_country_map
+country_codes <- names(output_country_map)
+output_filenames <- output_country_map
 
 # Proposed-method settings
 kappa <- 500
 latent <- FALSE
-method_xi <- "CE"
+method_xi <- "IN"
 project_baselines <- FALSE
 u_cap <- 0.999999
 z_cap <- NULL

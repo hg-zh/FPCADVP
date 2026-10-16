@@ -15,26 +15,38 @@
 #   LQD, Tangent, Proposed
 #
 # The Proposed method is highlighted for better illustration.
+# Approved publication comparison: proposed latent=TRUE/methodXi=CE
+# (estimator (14)) versus LQD and Tangent with methodXi=IN.
 # ============================================================
 
-rm(list = ls())
+script_arg <- grep("^--file=", commandArgs(), value = TRUE)
+script_dir <- if (length(script_arg)) {
+  dirname(normalizePath(gsub("~+~", " ", sub("^--file=", "", script_arg[1]), fixed = TRUE)))
+} else normalizePath(getwd())
+args <- commandArgs(trailingOnly = TRUE)
+kv <- list()
+for (arg in args) {
+  pair <- strsplit(arg, "=", fixed = TRUE)[[1]]
+  if (length(pair) != 2 || !pair[1] %in% c("prop_dir", "base_dir", "outdir", "setting", "results_dir")) {
+    stop("Expected setting=1|2, results_dir=PATH, prop_dir=PATH, base_dir=PATH or outdir=PATH")
+  }
+  kv[[pair[1]]] <- pair[2]
+}
+source(file.path(script_dir, "summarize_squared_imse.R"))
+result_dir <- if (is.null(kv$results_dir)) file.path(script_dir, "results", "paper_comparison") else kv$results_dir
+setting <- if (is.null(kv$setting)) 1L else as.integer(kv$setting)
+if (is.na(setting) || !setting %in% c(1L, 2L)) stop("setting must be 1 or 2")
 
 # -----------------------------
-# USER PARAMETERS: edit by hand
+# DEFAULT PLOT PARAMETERS
 # -----------------------------
 
-# Option 1: use merged_raw_results.rds produced by your analysis script
-# merged_path <- "plots/LatentF_CE_095_8_b1_beta063/merged_raw_results.rds"
-
-# Option 2: if you do NOT want to use merged_path, set merged_path <- NULL
-# and provide prop_dir + base_dir below
-# prop_dir <- NULL
-# base_dir <- NULL
-prop_dir <- "Res/Res_LatentF_CE_095_8_b1_beta063"
-base_dir <- "Res/Res_baselines_mse_t_b1_beta063"
-
-# Output folder
-outdir <- "plots/LatentF_CE_095_8_b1_beta063/figures"
+# The inputs must contain explicitly named squared-W1 outcomes.
+prop_dir <- if (!is.null(kv$prop_dir)) kv$prop_dir else
+  file.path(result_dir, "proposed_latent_CE", paste0("setting", setting))
+base_dir <- if (!is.null(kv$base_dir)) kv$base_dir else
+  file.path(result_dir, "benchmarks_IN", paste0("setting", setting))
+outdir <- if (!is.null(kv$outdir)) kv$outdir else file.path(result_dir, "figures", paste0("setting", setting))
 
 # Which m values to plot
 # Example: m_values <- 200
@@ -73,74 +85,6 @@ library(ggplot2)
 # -----------------------------
 # HELPER FUNCTIONS
 # -----------------------------
-read_merged_results <- function(merged_path = NULL, prop_dir = NULL, base_dir = NULL) {
-  
-  # Case 1: read merged file directly
-  if (!is.null(merged_path) && file.exists(merged_path)) {
-    merged <- readRDS(merged_path)
-    
-    req <- c("rep", "n", "N", "m", "imse_prop", "imse_lqd", "imse_tangent")
-    miss <- setdiff(req, names(merged))
-    if (length(miss) > 0) {
-      stop("merged_path exists but is missing required columns: ",
-           paste(miss, collapse = ", "))
-    }
-    
-    return(merged[, req, drop = FALSE])
-  }
-  
-  # Case 2: merge prop/base raw results
-  if (is.null(prop_dir) || is.null(base_dir)) {
-    stop("Please either:\n",
-         "  1) provide merged_path, OR\n",
-         "  2) provide both prop_dir and base_dir.")
-  }
-  
-  prop_raw_path <- file.path(prop_dir, "raw_results.rds")
-  base_raw_path <- file.path(base_dir, "raw_results.rds")
-  
-  if (!file.exists(prop_raw_path)) stop("Missing: ", prop_raw_path)
-  if (!file.exists(base_raw_path)) stop("Missing: ", base_raw_path)
-  
-  prop_raw <- readRDS(prop_raw_path)
-  base_raw <- readRDS(base_raw_path)
-  
-  if (!("ok" %in% names(prop_raw))) stop("prop raw_results.rds must contain column 'ok'")
-  if (!("ok" %in% names(base_raw))) stop("base raw_results.rds must contain column 'ok'")
-  
-  prop_ok <- prop_raw[prop_raw$ok, , drop = FALSE]
-  base_ok <- base_raw[base_raw$ok, , drop = FALSE]
-  
-  required_prop <- c("rep", "n", "N", "m", "imse")
-  required_base <- c("rep", "n", "N", "m", "imse_lqd", "imse_tangent")
-  
-  miss_prop <- setdiff(required_prop, names(prop_ok))
-  miss_base <- setdiff(required_base, names(base_ok))
-  
-  if (length(miss_prop) > 0) {
-    stop("prop raw_results.rds missing required columns: ",
-         paste(miss_prop, collapse = ", "))
-  }
-  if (length(miss_base) > 0) {
-    stop("base raw_results.rds missing required columns: ",
-         paste(miss_base, collapse = ", "))
-  }
-  
-  prop_ok <- prop_ok[, c("rep", "n", "N", "m", "imse"), drop = FALSE]
-  names(prop_ok)[names(prop_ok) == "imse"] <- "imse_prop"
-  
-  base_ok <- base_ok[, c("rep", "n", "N", "m", "imse_lqd", "imse_tangent"), drop = FALSE]
-  
-  merged <- merge(prop_ok, base_ok, by = c("rep", "n", "N", "m"), all = FALSE)
-  
-  if (nrow(merged) == 0) {
-    stop("After merging proposed and baseline results, there are zero rows.\n",
-         "Check whether (rep, n, N, m) match between the two runs.")
-  }
-  
-  merged
-}
-
 make_long_df <- function(merged_df) {
   lqd_df <- data.frame(
     rep = merged_df$rep,
@@ -148,7 +92,7 @@ make_long_df <- function(merged_df) {
     N = merged_df$N,
     m = merged_df$m,
     method = "LQD",
-    imse = merged_df$imse_lqd
+    imse_sq = merged_df$imse_sq_lqd
   )
   
   tan_df <- data.frame(
@@ -157,7 +101,7 @@ make_long_df <- function(merged_df) {
     N = merged_df$N,
     m = merged_df$m,
     method = "Tangent",
-    imse = merged_df$imse_tangent
+    imse_sq = merged_df$imse_sq_tangent
   )
   
   prop_df <- data.frame(
@@ -166,22 +110,17 @@ make_long_df <- function(merged_df) {
     N = merged_df$N,
     m = merged_df$m,
     method = "Proposed",
-    imse = merged_df$imse_prop
+    imse_sq = merged_df$imse_sq_prop
   )
   
   out <- rbind(lqd_df, tan_df, prop_df)
-  out <- out[is.finite(out$imse), , drop = FALSE]
   out
 }
 
 # -----------------------------
 # READ DATA
 # -----------------------------
-merged <- read_merged_results(
-  merged_path = merged_path,
-  prop_dir = prop_dir,
-  base_dir = base_dir
-)
+merged <- read_squared_results(prop_dir, base_dir, setting = setting)
 
 # Filter by m
 if (!is.null(m_values)) {
@@ -227,6 +166,8 @@ for (m0 in m_vals) {
   if (nrow(d0) == 0) next
   
   long_df <- make_long_df(d0)
+  write.csv(long_df, file.path(outdir, sprintf("figure3_squared_plot_data_m%s.csv", m0)),
+            row.names = FALSE)
   
   n_levels <- sort(unique(long_df$n))
   long_df$n <- factor(long_df$n, levels = n_levels)
@@ -256,7 +197,7 @@ for (m0 in m_vals) {
     )
   }
   
-  p <- ggplot(long_df, aes(x = n, y = imse)) +
+  p <- ggplot(long_df, aes(x = n, y = imse_sq)) +
     box_layer +
     facet_wrap(~ N, nrow = 1, drop = FALSE) +
     scale_fill_manual(values = fill_cols) +
@@ -265,7 +206,7 @@ for (m0 in m_vals) {
       x = "Sample size n",
       y = "IMSE",
       fill = "Method"
-    ) + ylim(c(0.02,0.1))+
+    ) +
     theme_bw(base_size = 12) +
     theme(
       axis.title.x = element_text(size = 14, face = "bold"),
@@ -293,7 +234,7 @@ for (m0 in m_vals) {
     p <- p + scale_y_log10()
   }
   
-  print(p)
+  if (interactive()) print(p)
   
   outfile <- file.path(
     outdir,

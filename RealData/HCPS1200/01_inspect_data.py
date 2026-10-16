@@ -200,7 +200,7 @@ def write_inventory_csv(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect HCP ZIP/CIFTI data layout.")
-    parser.add_argument("--root", type=Path, default=Path("."), help="Project root.")
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent, help="Application data/output root (default: script directory).")
     parser.add_argument(
         "--inventory-csv",
         type=Path,

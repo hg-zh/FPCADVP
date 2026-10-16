@@ -6,6 +6,23 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
+# Paths default to this application directory, regardless of the working directory.
+script_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+if (length(script_file)) {
+  script_file <- sub("^--file=", "", script_file[1])
+} else {
+  script_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (is.null(script_file) && requireNamespace("rstudioapi", quietly = TRUE)) {
+    script_file <- rstudioapi::getSourceEditorContext()$path
+  }
+}
+if (is.null(script_file) || !nzchar(script_file)) stop("Run this file with Rscript or Source.")
+script_dir <- dirname(normalizePath(gsub("~+~", " ", script_file, fixed = TRUE), mustWork = TRUE))
+source(file.path(script_dir, "hcp_paths.R"))
+kv <- hcp_parse_args(commandArgs(trailingOnly = TRUE))
+project_root <- kv$root %||% script_dir
+hcp_path <- function(path) hcp_resolve_path(path, project_root)
+
 parse_args <- function(args) {
   out <- list()
   for (a in args) {
@@ -99,13 +116,13 @@ make_subject_transport_list <- function(df_roi_long, xgrid) {
 main <- function() {
   kv <- parse_args(commandArgs(trailingOnly = TRUE))
 
-  input_quant <- kv$input_quant %||% "data_processed/hcp_roi_quantiles_raw.csv"
-  output_quant_norm <- kv$output_quant_norm %||% "data_processed/hcp_distribution_quantiles_normalized.csv"
-  output_transports <- kv$output_transports %||% "data_processed/hcp_transports_long.csv"
-  output_mean_quant <- kv$output_mean_quant %||% "data_processed/hcp_mean_quantiles.csv"
-  output_objects <- kv$output_objects %||% "data_processed/hcp_transport_objects.rds"
-  output_norm_stats <- kv$output_norm_stats %||% "data_processed/hcp_roi_norm_stats.csv"
-  log_file <- kv$log_file %||% "logs/03_build_transports.log"
+  input_quant <- hcp_path(kv$input_quant %||% "data_processed/hcp_roi_quantiles_raw.csv")
+  output_quant_norm <- hcp_path(kv$output_quant_norm %||% "data_processed/hcp_distribution_quantiles_normalized.csv")
+  output_transports <- hcp_path(kv$output_transports %||% "data_processed/hcp_transports_long.csv")
+  output_mean_quant <- hcp_path(kv$output_mean_quant %||% "data_processed/hcp_mean_quantiles.csv")
+  output_objects <- hcp_path(kv$output_objects %||% "data_processed/hcp_transport_objects.rds")
+  output_norm_stats <- hcp_path(kv$output_norm_stats %||% "data_processed/hcp_roi_norm_stats.csv")
+  log_file <- hcp_path(kv$log_file %||% "logs/03_build_transports.log")
   xgrid_len <- as.integer(kv$xgrid_len %||% "201")
 
   if (!file.exists(input_quant)) {
@@ -115,7 +132,9 @@ main <- function() {
     stop("xgrid_len must be >= 11.")
   }
 
-  dir.create(dirname(log_file), recursive = TRUE, showWarnings = FALSE)
+  for (path in c(log_file, output_quant_norm, output_transports, output_mean_quant, output_objects, output_norm_stats)) {
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  }
   log_con <- file(log_file, open = "wt")
   on.exit(close(log_con), add = TRUE)
 

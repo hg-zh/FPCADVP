@@ -5,23 +5,23 @@
 # the saved seed-20 results object.
 #
 # This script reads:
-#   newcode/output/section62_glucose_seed_20/section62_results_seed_20.rds
-#   newcode/output/section62_glucose_seed_20/baseline_results_seed_20.rds
+#   output/section62_glucose_seed_20/section62_results_seed_20.rds
+#   output/section62_glucose_seed_20/baseline_results_seed_20.rds
 # and rewrites:
-#   newcode/output/section62_glucose_seed_20/ind_gluco_seed_20.pdf
+#   output/section62_glucose_seed_20/ind_gluco_seed_20.pdf
 
 get_this_script_path <- function() {
+  file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+  if (length(file_arg)) {
+    return(normalizePath(gsub("~+~", " ", sub("^--file=", "", file_arg[1]), fixed = TRUE), mustWork = TRUE))
+  }
+  source_path <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (!is.null(source_path)) return(normalizePath(source_path, mustWork = TRUE))
   if (requireNamespace("rstudioapi", quietly = TRUE)) {
     path <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
     if (nzchar(path)) return(normalizePath(path, mustWork = TRUE))
   }
-
-  file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)
-  if (length(file_arg) > 0) {
-    return(normalizePath(sub("^--file=", "", file_arg[1]), mustWork = TRUE))
-  }
-
-  stop("Cannot determine the script path. Save the script and run it from RStudio or via Rscript.")
+  stop("Run this file with Rscript or Source.")
 }
 
 script_path <- get_this_script_path()
@@ -48,7 +48,7 @@ if (!file.exists(results_path)) {
     paste(
       "Saved results not found at",
       results_path,
-      "\nRun newcode/run_section62_glucose_seed20.R first."
+      "\nRun run_section62_glucose.R first."
     )
   )
 }
@@ -57,25 +57,26 @@ if (!file.exists(baseline_results_path)) {
     paste(
       "Saved baseline results not found at",
       baseline_results_path,
-      "\nRun newcode/run_section62_glucose_baselines_seed20.R first."
+      "\nRun run_section62_glucose_baselines.R first."
     )
   )
 }
 
 results <- readRDS(results_path)
 baseline_results <- readRDS(baseline_results_path)
-figure_file <- results$files$figure
+# Reconstruct the destination after relocation; saved fits may contain old absolute paths.
+figure_file <- file.path(dirname(results_path), sprintf("ind_gluco_seed_%s.pdf", results$seed))
 
 # ----------------------------
 # Edit these plotting settings
 # ----------------------------
 
-PANEL_TITLES <- c(
-  "Subject 20 (1636-70-1003), t = 3",
-  "Subject 20 (1636-70-1003), t = 7",
-  "Subject 21 (1636-70-1005), t = 4",
-  "Subject 21 (1636-70-1005), t = 5"
-)
+# Selection is by the smallest proposed-method mean held-out errors.
+# Display the selected pair in subject-index order, as in Figure 6.
+selected_for_plot <- results$selected_summary[
+  order(results$selected_summary$subject_index), , drop = FALSE
+]
+PANEL_TITLES <- NULL  # Derive titles from the selected subjects and days.
 
 METHOD_COLORS <- c(
   Observed = "black",
@@ -113,7 +114,7 @@ SAVE_HEIGHT <- 0.8*300/72
 SAVE_UNITS <- "in"
 
 plot_obj <- glucose_plot_method_comparison(
-  selected_summary = results$selected_summary,
+  selected_summary = selected_for_plot,
   observed_holdouts = results$observed_holdouts,
   method_holdouts = list(
     Proposed = results$predicted_holdouts,
@@ -143,5 +144,5 @@ plot_obj <- glucose_plot_method_comparison(
   save_units = SAVE_UNITS
 )
 
-print(plot_obj)
+if (interactive()) print(plot_obj)
 cat(sprintf("Figure written to: %s\n", figure_file))

@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-## para_R2_baselines_mse_t.R
+## para_baselines_mse_t.R
 ## ------------------------------------------------------------
 ## Parallel Monte Carlo simulation driver for two baseline methods:
 ##   (A) LQD + time-FPCA
@@ -14,6 +14,8 @@
 ##
 ## Outputs (in outdir):
 ##   - raw_results.rds
+##     imse_sq_lqd/imse_sq_tangent are squared-W1 IMSE; the legacy
+##     imse_lqd/imse_tangent fields retain integrated unsquared W1 error.
 ##   - summary.csv
 ##   - sessionInfo.txt
 ##   - (optional) MSE curves under outdir/mse_curves/{LQD,Tangent}/
@@ -21,9 +23,8 @@
 ##       (optional) ... .pdf if plot_mse_t=TRUE
 ##
 ## Usage example:
-##   module load r/4.5.0
-##   Rscript para_R2_baselines_mse_t.R outdir=Res_R2_baselines_mse_t \
-##     save_mse_t=TRUE plot_mse_t=FALSE t_grid_len=51 methodXi=CE
+##   Rscript para_baselines_mse_t.R outdir=results/paper_comparison/benchmarks_IN/setting2 \
+##     save_mse_t=TRUE plot_mse_t=FALSE t_grid_len=51 methodXi=IN
 ## ------------------------------------------------------------
 
 options(stringsAsFactors = FALSE)
@@ -67,12 +68,23 @@ parse_int_vec <- function(x) {
   as.integer(strsplit(x, ",", fixed = TRUE)[[1]])
 }
 
+parse_num_vec <- function(x) {
+  x <- gsub("\\s+", "", as.character(x))
+  if (nchar(x) == 0) return(numeric(0))
+  suppressWarnings(as.numeric(strsplit(x, ",", fixed = TRUE)[[1]]))
+}
+
+# Default dependencies and outputs are relative to this distributed script.
+script_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+if (length(script_arg) != 1L) stop("Run this driver with Rscript.")
+script_dir <- dirname(normalizePath(gsub("~+~", " ", sub("^--file=", "", script_arg), fixed = TRUE), mustWork = TRUE))
+
 kv <- parse_kv_args(commandArgs(trailingOnly = TRUE))
 
 # ---- config (defaults) ----
 reps       <- if (!is.null(kv$reps)) as.integer(kv$reps) else 200
 seed_base  <- if (!is.null(kv$seed_base)) as.integer(kv$seed_base) else 2000
-outdir     <- kv$outdir %||% "Res_R2_baselines"
+outdir     <- kv$outdir %||% file.path(script_dir, "results", "paper_comparison", "benchmarks_IN", "setting2")
 t_design   <- kv$t_design %||% "random"   # "random" or "fixed"
 
 # Baseline knobs
@@ -85,7 +97,7 @@ spar         <- if (!is.null(kv$spar)) as.numeric(kv$spar) else NULL
 
 # Output/eval grid
 t_grid_len <- if (!is.null(kv$t_grid_len)) as.integer(kv$t_grid_len) else 51
-methodXi   <- kv$methodXi %||% "CE"   # PACE/CE recommended
+methodXi   <- kv$methodXi %||% "IN"   # Published benchmark score rule
 decayR     <- if (!is.null(kv$decayR)) as.numeric(kv$decayR) else 1
 if (!is.finite(decayR) || decayR <= 0) decayR <- 1
 
@@ -101,8 +113,23 @@ mse_rep_only <- as_int1(kv$mse_rep_only, default = NA_integer_)
 n_vec <- if (!is.null(kv$n_vec)) parse_int_vec(kv$n_vec) else c(20, 50, 100, 200, 400)
 N_vec <- if (!is.null(kv$N_vec)) parse_int_vec(kv$N_vec) else c(3, 5, 10, 20)
 m_vec <- if (!is.null(kv$m_vec)) parse_int_vec(kv$m_vec) else c(200)
-beta_a <- if (!is.null(kv$beta_a)) parse_int_vec(kv$beta_a) else c(3,4)
-beta_b <- if (!is.null(kv$beta_b)) parse_int_vec(kv$beta_b) else c(1,2)
+beta_a <- if (!is.null(kv$beta_a)) parse_num_vec(kv$beta_a) else c(3,4)
+beta_b <- if (!is.null(kv$beta_b)) parse_num_vec(kv$beta_b) else c(1,2)
+for (beta_name in c("beta_a", "beta_b")) {
+  beta_range <- get(beta_name)
+  if (length(beta_range) != 2 || any(!is.finite(beta_range)) ||
+      any(beta_range <= 0) || beta_range[1] >= beta_range[2]) {
+    stop(beta_name, " must be a finite, positive, increasing pair")
+  }
+}
+
+error_criteria <- list(
+  imse_sq_lqd = "mean_i integral_t [integral_u abs(Q_hat_i - T_true_i)]^2 dt",
+  imse_sq_tangent = "mean_i integral_t [integral_u abs(T_hat_i - T_true_i)]^2 dt",
+  imse_lqd = "legacy: mean_i integral_t integral_u abs(Q_hat_i - T_true_i) dt",
+  imse_tangent = "legacy: mean_i integral_t integral_u abs(T_hat_i - T_true_i) dt",
+  quadrature = "trapezoidal rule on the common transport and time grids"
+)
 
 if (length(n_vec) < 1 || any(!is.finite(n_vec))) stop("n_vec is empty or invalid")
 if (length(N_vec) < 1 || any(!is.finite(N_vec))) stop("N_vec is empty or invalid")
@@ -116,14 +143,14 @@ t_grid_out <- seq(0, 1, length.out = t_grid_len)
 cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK")))
 if (!is.finite(cores) || cores < 1) cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_NTASKS")))
 if ((!is.finite(cores) || cores < 1) && !is.null(kv$cores)) cores <- as.integer(kv$cores)
-if (!is.finite(cores) || cores < 1) cores <- 20
+if (!is.finite(cores) || cores < 1) cores <- 1
 
 cores_env <- Sys.getenv("SLURM_NTASKS")
 cpus_env  <- Sys.getenv("SLURM_CPUS_PER_TASK")
 
 # ---- locate scripts ----
-mod_script  <- kv$mod_script  %||% "transport_fpca_modular.R"
-base_script <- kv$base_script %||% "baseline_fpca_methods.R"
+mod_script  <- kv$mod_script  %||% file.path(script_dir, "transport_fpca_modular.R")
+base_script <- kv$base_script %||% file.path(script_dir, "baseline_fpca_methods.R")
 
 if (!file.exists(mod_script)) {
   stop(sprintf("Cannot find '%s'. Put transport_fpca_modular.R in the same directory or pass mod_script=PATH.", mod_script))
@@ -150,6 +177,7 @@ sim_supports_decayR <- FALSE
 }
 
 # ---- output dir ----
+if (file.exists(file.path(outdir, "raw_results.rds"))) stop("Refusing to overwrite existing results; choose a new outdir: ", outdir)
 if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
 
 # Curve output dirs
@@ -302,8 +330,11 @@ run_one_rep <- function(rep_id,
             verbose = FALSE
           )
 
-          imse_lqd_i <- imse_transports(fit_lqd$Q_hat, T_true, t_grid_out, sim$xgrid)
+          imse_lqd_i <- imse_transports(fit_lqd$Q_hat, T_true, t_grid_out, sim$xgrid,
+                                        squared = FALSE)
           imse_lqd <- mean(imse_lqd_i)
+          imse_sq_lqd <- mean(imse_transports(fit_lqd$Q_hat, T_true, t_grid_out,
+                                             sim$xgrid, squared = TRUE))
 
           # ---- Tangent/log-map baseline
           fit_tan <- fit_tangent_wass_fpca(
@@ -323,8 +354,11 @@ run_one_rep <- function(rep_id,
             verbose = FALSE
           )
 
-          imse_tan_i <- imse_transports(fit_tan$T_hat, T_true, t_grid_out, sim$xgrid)
+          imse_tan_i <- imse_transports(fit_tan$T_hat, T_true, t_grid_out, sim$xgrid,
+                                        squared = FALSE)
           imse_tan <- mean(imse_tan_i)
+          imse_sq_tangent <- mean(imse_transports(fit_tan$T_hat, T_true, t_grid_out,
+                                                 sim$xgrid, squared = TRUE))
 
           # ---- Optional: pointwise MSE(t) curves (W1^2 averaged over subjects)
           if (do_save_curve_this_rep) {
@@ -359,10 +393,13 @@ run_one_rep <- function(rep_id,
             )
           }
 
-          list(ok = TRUE, imse_lqd = imse_lqd, imse_tan = imse_tan)
+          list(ok = TRUE, imse_lqd = imse_lqd, imse_tan = imse_tan,
+               imse_sq_lqd = imse_sq_lqd, imse_sq_tangent = imse_sq_tangent)
 
         }, error = function(e) {
-          list(ok = FALSE, imse_lqd = NA_real_, imse_tan = NA_real_, err = conditionMessage(e))
+          list(ok = FALSE, imse_lqd = NA_real_, imse_tan = NA_real_,
+               imse_sq_lqd = NA_real_, imse_sq_tangent = NA_real_,
+               err = conditionMessage(e))
         })
 
         idx <- idx + 1L
@@ -373,6 +410,8 @@ run_one_rep <- function(rep_id,
           m = m,
           imse_lqd = out$imse_lqd,
           imse_tangent = out$imse_tan,
+          imse_sq_lqd = out$imse_sq_lqd,
+          imse_sq_tangent = out$imse_sq_tangent,
           ok = out$ok,
           err = if (!isTRUE(out$ok)) out$err else "",
           stringsAsFactors = FALSE
@@ -477,6 +516,7 @@ if (nrow(ok_df) == 0) {
     t_grid_len, t_grid_out,
     methodXi, decayR,
     n_vec, N_vec, m_vec,
+    beta_a, beta_b, error_criteria,
     mod_script, base_script,
     save_mse_t, plot_mse_t, mse_rep_only,
     curve_root,
@@ -514,6 +554,10 @@ summ_list <- lapply(groups, function(d) {
     se_imse_lqd = stats::sd(d$imse_lqd) / sqrt(nrow(d)),
     mean_imse_tangent = mean(d$imse_tangent),
     se_imse_tangent = stats::sd(d$imse_tangent) / sqrt(nrow(d)),
+    mean_imse_sq_lqd = mean(d$imse_sq_lqd),
+    se_imse_sq_lqd = stats::sd(d$imse_sq_lqd) / sqrt(nrow(d)),
+    mean_imse_sq_tangent = mean(d$imse_sq_tangent),
+    se_imse_sq_tangent = stats::sd(d$imse_sq_tangent) / sqrt(nrow(d)),
     stringsAsFactors = FALSE
   )
 })
@@ -536,6 +580,7 @@ save(
   t_grid_len, t_grid_out,
   methodXi,decayR,
   n_vec, N_vec, m_vec,
+  beta_a, beta_b, error_criteria,
   mod_script, base_script,
   save_mse_t, plot_mse_t, mse_rep_only,
   curve_root,

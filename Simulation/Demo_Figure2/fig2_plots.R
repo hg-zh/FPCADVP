@@ -1,22 +1,28 @@
 # fig2_plots_modular.R
 # ------------------------------------------------------------
-# Reproduces the LEFT + MIDDLE panels of Figure 2 using the
+# Reproduces the MIDDLE and RIGHT panels of Figure 2 using the
 # new modular functions in transport_fpca_modular.R.
 #
 # This replaces sim_sparse_illu.R + utlis.R.
 #
-# Outputs (in working directory):
-#   - Fig2_left_modular.(png|pdf)
-#   - Fig2_middle_modular.(png|pdf)
+# Outputs (under this script's outputs directory by default):
+#   - Fig2_middle_modular.pdf
+#   - Fig2_right_modular.html with its companion dependency directory
 #
-# Required packages: fdapace, ggplot2
+# Required packages: fdapace, ggplot2, plotly, htmlwidgets
 # ------------------------------------------------------------
 
 library(fdapace)
 library(ggplot2)
 
-# Adjust the path if needed
-source("transport_fpca_modular.R")
+script_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+if (length(script_arg) != 1L) stop("Run this script with Rscript.")
+script_dir <- dirname(normalizePath(gsub("~+~", " ", sub("^--file=", "", script_arg), fixed = TRUE), mustWork = TRUE))
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) > 1L || (length(args) && !grepl("^outdir=", args))) stop("Optional argument: outdir=PATH")
+outdir <- if (length(args)) sub("^outdir=", "", args) else file.path(script_dir, "outputs")
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+source(file.path(script_dir, "transport_fpca_modular.R"))
 
 # -------------------------
 # Global settings
@@ -61,10 +67,9 @@ fit_mid <- fit_transport_fpca(
   t_list = sim_mid$t_list,
   xgrid = xgrid,
   kappa = sim_mid$kappa_true,
-  latent = FALSE,          # Section 3.2-style (FPCA directly on U)
   g = g,
   g_inv = g_inv,
-  methodXi = "CE",         # match the old script's plotted version
+  methodXi = "CE",        
   fpca_optns = list(methodMuCovEst = "smooth"),
   verbose = TRUE
 )
@@ -125,7 +130,7 @@ p_mid <- ggplot(DF_mid, aes(x = x, y = y, color = time)) +
 
 p_mid
 
-ggsave("Fig2_middle_modular.pdf", p_mid, width = 500/72, height = 400/72)
+ggsave(file.path(outdir, "Fig2_middle_modular.pdf"), p_mid, width = 500/72, height = 400/72)
 # Save
 # try(ggsave("Fig2_middle_modular.png", p_mid, width = 4.6, height = 3.6, dpi = 300), silent = TRUE)
 # try(ggsave("Fig2_middle_modular.pdf", p_mid, width = 4.6, height = 3.6), silent = TRUE)
@@ -137,8 +142,9 @@ ggsave("Fig2_middle_modular.pdf", p_mid, width = 500/72, height = 400/72)
 # Red curves are the transports at the observed times.
 # Identity is subtracted; sign flipped to match the middle panel: z = -(T(u)-u).
 
-if (!requireNamespace("plotly", quietly = TRUE)) install.packages("plotly")
-if (!requireNamespace("htmlwidgets", quietly = TRUE)) install.packages("htmlwidgets")
+for (package in c("plotly", "htmlwidgets")) {
+  if (!requireNamespace(package, quietly = TRUE)) stop("Install required package: ", package)
+}
 library(plotly)
 library(htmlwidgets)
 
@@ -215,8 +221,28 @@ scene <- list(
 fig <- plotly::layout(fig, scene = scene, showlegend = FALSE)
 
 # Save interactive HTML (selfcontained=FALSE avoids needing pandoc)
-htmlwidgets::saveWidget(fig, "Fig2_right_modular.html", selfcontained = FALSE)
+htmlwidgets::saveWidget(fig, file.path(outdir, "Fig2_right_modular.html"), selfcontained = FALSE)
 
-# Display in RStudio Viewer
-fig
+# Portable static companion from the same fitted/true arrays. The archived
+# manuscript image uses the interactive plot's camera/rendering; this PDF is
+# provided as a deterministic, browser-independent view of those same values.
+pdf(file.path(outdir, "Fig2_right_static.pdf"), width = 7, height = 5)
+view <- persp(t_grid, u_grid, t(Z_hat), theta = 40, phi = 25,
+              xlab = "time", ylab = "u", zlab = "T(u)-u",
+              zlim = range(c(Z_true, Z_hat)),
+              col = grDevices::adjustcolor("blue", alpha.f = 0.35),
+              border = NA, ticktype = "detailed")
+for (k in unique(round(seq(1, length(u_grid), length.out = 16)))) {
+  lines(trans3d(t_grid, rep(u_grid[k], length(t_grid)), Z_true[k, ], view),
+        col = grDevices::adjustcolor("grey40", alpha.f = 0.6), lwd = 0.7)
+}
+for (j in seq_along(t_obs)) {
+  z_line <- -(T_obs_mid[[i_show]][j, ] - u_grid)
+  lines(trans3d(rep(t_obs[j], length(u_grid)), u_grid, z_line, view),
+        col = "red", lwd = 1.5)
+}
+dev.off()
+
+# Display in RStudio Viewer when sourced interactively.
+if (interactive()) fig
 

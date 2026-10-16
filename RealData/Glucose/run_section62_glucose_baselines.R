@@ -6,22 +6,21 @@
 # preprocessing objects as the seed-20 proposed-method analysis.
 
 get_this_script_path <- function() {
+  file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+  if (length(file_arg)) {
+    return(normalizePath(gsub("~+~", " ", sub("^--file=", "", file_arg[1]), fixed = TRUE), mustWork = TRUE))
+  }
+  source_path <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (!is.null(source_path)) return(normalizePath(source_path, mustWork = TRUE))
   if (requireNamespace("rstudioapi", quietly = TRUE)) {
     path <- tryCatch(rstudioapi::getSourceEditorContext()$path, error = function(e) "")
     if (nzchar(path)) return(normalizePath(path, mustWork = TRUE))
   }
-
-  file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)
-  if (length(file_arg) > 0) {
-    return(normalizePath(sub("^--file=", "", file_arg[1]), mustWork = TRUE))
-  }
-
-  stop("Cannot determine the script path. Save the script and run it from RStudio or via Rscript.")
+  stop("Run this file with Rscript or Source.")
 }
 
 script_path <- get_this_script_path()
 script_dir <- dirname(script_path)
-project_dir <- dirname(script_dir)
 
 source(file.path(script_dir, "transport_fpca_modular.R"))
 source(file.path(script_dir, "section62_glucose_helpers.R"))
@@ -50,7 +49,7 @@ if (!file.exists(proposed_results_path)) {
     paste(
       "Saved proposed-method results not found at",
       proposed_results_path,
-      "\nRun newcode/run_section62_glucose_seed20.R first."
+      "\nRun run_section62_glucose.R first."
     )
   )
 }
@@ -61,7 +60,7 @@ if (!identical(as.integer(proposed_results$seed), seed)) {
 }
 
 time_grid <- as.numeric(proposed_results$fit$workGrid)
-data_path <- file.path(script_dir,  "data_1.csv")
+data_path <- Sys.getenv("GLUCOSE_DATA_FILE", unset = file.path(script_dir, "Data", "data_1.csv"))
 output_dir <- file.path(script_dir, "output", sprintf("section62_glucose_seed_%s", seed))
 
 loaded <- glucose_load_data(data_path = data_path, day_window = proposed_results$config$day_window)

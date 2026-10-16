@@ -1,9 +1,9 @@
-# Main convenience runner for the female mortality figures.
+# Convenience runner for direct-U IN female mortality figures (estimator 13).
 #
 # This script produces:
-# 1. `01_mean_eigenfunctions_female.R` -> `mean_F.pdf`
+# 1. `01_mean_eigenfunctions_female.R` -> `mean_IN_F.pdf`
 # 2. `02_country_sign_heatmap_female.R` -> `countries_F.pdf`
-# 3. `03_trajectory_html_female.R` -> `bel_F.html`, `blr_F.html` by default
+# 3. `03_trajectory_html_female.R` -> `esp_F.html`, `blr_F.html` by default
 #
 # Run this script in RStudio with Source, or run the individual scripts if you
 # only want one figure at a time.
@@ -12,10 +12,21 @@
 # Parameters
 # =========================
 
-project_root <- NULL
-helper_file <- file.path("repro_rstudio_scripts", "mortality_repro_functions.R")
+# Resolve adjacent files from the entrypoint, independently of the working directory.
+script_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+if (length(script_file)) {
+  script_file <- sub("^--file=", "", script_file[1])
+} else {
+  script_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (is.null(script_file) && requireNamespace("rstudioapi", quietly = TRUE)) {
+    script_file <- rstudioapi::getSourceEditorContext()$path
+  }
+}
+if (is.null(script_file) || !nzchar(script_file)) stop("Run this file with Rscript or Source.")
+project_root <- dirname(normalizePath(gsub("~+~", " ", script_file, fixed = TRUE), mustWork = TRUE))
+helper_file <- file.path(project_root, "mortality_repro_functions.R")
 sex <- "Female"
-output_dir <- file.path("repro_rstudio_scripts", "output")
+output_dir <- file.path(dirname(helper_file), "output", "estimator13_IN")
 
 # Which outputs to build
 build_mean_eigen_plot <- TRUE
@@ -27,7 +38,7 @@ use_cairo_pdf <- TRUE
 display_plots <- interactive()
 display_widgets <- interactive()
 trajectory_file_map <- c(
-  ESP = paste0("bel_", if (tolower(sex) == "female") "F" else "M", ".html"),
+  ESP = paste0("esp_", if (tolower(sex) == "female") "F" else "M", ".html"),
   BLR = paste0("blr_", if (tolower(sex) == "female") "F" else "M", ".html")
 )
 legacy_heatmap_order <- c(

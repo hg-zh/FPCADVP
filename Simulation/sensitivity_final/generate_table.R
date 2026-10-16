@@ -49,6 +49,24 @@ integer_like <- function(x) {
   is.finite(x) & abs(x - round(x)) <= 1e-12
 }
 
+summary_estimator <- function(inputs) {
+  has_method <- vapply(inputs, function(x) "methodXi" %in% names(x), logical(1L))
+  has_latent <- vapply(inputs, function(x) "latent" %in% names(x), logical(1L))
+  ## The original CE summaries predate these two provenance columns.
+  if (!any(has_method) && !any(has_latent)) return(list(methodXi = "CE", latent = FALSE))
+  require_true(all(has_method) && all(has_latent),
+               "Estimator provenance must be present in every summary file")
+  methods <- unique(unlist(lapply(inputs, function(x) as.character(x$methodXi))))
+  require_true(length(methods) == 1L && methods %in% c("CE", "IN"),
+               "Summary files must contain one shared methodXi, CE or IN")
+  latents <- unique(unlist(lapply(inputs, function(x) toupper(as.character(x$latent)))))
+  require_true(length(latents) == 1L && latents %in% c("FALSE", "TRUE"),
+               "Summary files must contain one shared logical latent mode")
+  latent <- unname(latents) == "TRUE"
+  require_true(!latent || methods == "CE", "latent=TRUE requires methodXi=CE")
+  list(methodXi = unname(methods), latent = latent)
+}
+
 atomic_write_lines <- function(lines, path) {
   if (file.exists(path)) stop("Refusing to overwrite existing table: ", path)
   parent <- dirname(path)
@@ -115,6 +133,8 @@ validate_table_inputs <- function(representative_abs, representative_pair, acros
     summary_across_cells = across,
     failure_summary_by_config = failures
   )
+  methodXi <- summary_estimator(inputs)$methodXi
+  representative_N <- if (methodXi == "IN") 20L else 5L
   for (name in names(inputs)) {
     x <- inputs[[name]]
     require_true(nrow(x) == 15L, paste0(name, " must have exactly 15 rows"))
@@ -125,14 +145,14 @@ validate_table_inputs <- function(representative_abs, representative_pair, acros
   }
 
   require_true(
-    all(representative_abs$n == 100 & representative_abs$N == 5 &
+    all(representative_abs$n == 100 & representative_abs$N == representative_N &
           representative_abs$m == 200),
-    "Absolute summaries must be restricted to n=100, N=5, m=200"
+    paste0("Absolute summaries must be restricted to n=100, N=", representative_N, ", m=200")
   )
   require_true(
-    all(representative_pair$n == 100 & representative_pair$N == 5 &
+    all(representative_pair$n == 100 & representative_pair$N == representative_N &
           representative_pair$m == 200),
-    "Paired summaries must be restricted to n=100, N=5, m=200"
+    paste0("Paired summaries must be restricted to n=100, N=", representative_N, ", m=200")
   )
   require_true(
     all(representative_abs$reps_planned == 200 &
@@ -170,6 +190,10 @@ validate_table_inputs <- function(representative_abs, representative_pair, acros
 write_sensitivity_table <- function(representative_abs, representative_pair,
                                     across, failures, path) {
   validate_table_inputs(representative_abs, representative_pair, across, failures)
+  estimator <- summary_estimator(list(representative_abs, representative_pair, across, failures))
+  methodXi <- estimator$methodXi
+  latent <- estimator$latent
+  mark_red <- latent || methodXi == "IN"
   representative_abs <- order_to_plan(representative_abs, "summary_by_cell data")
   representative_pair <- order_to_plan(representative_pair, "paired_summary_by_cell data")
   across <- order_to_plan(across, "summary_across_cells data")
@@ -197,12 +221,26 @@ write_sensitivity_table <- function(representative_abs, representative_pair,
     body[i] <- paste0(paste(fields, collapse = " & "), " \\\\")
   }
 
+  caption <- paste0(
+    "Sensitivity of ",
+    if (latent) "the latent-process conditional-expectation procedure (FPCA on $Z=g^{-1}(U)$, \\texttt{latent=TRUE}, \\texttt{methodXi=CE})"
+    else if (methodXi == "IN") "the integration-score procedure (FPCA on $U$, \\texttt{latent=FALSE}, \\texttt{methodXi=IN})"
+    else "the conditional-expectation-score procedure (FPCA on $U$, \\texttt{latent=FALSE}, \\texttt{methodXi=CE})",
+    " to the temporal smoothing kernel and joint bandwidth multiplier $c_h$ under Setting~1.  Absolute results are shown for the prespecified representative cell $n=100$, $N=",
+    if (methodXi == "IN") "20" else "5",
+    "$ and $m=200$.  The paired percentage change is the Monte Carlo mean of the replication-level changes relative to the default for the same procedure.  All configurations had 200 successful fits and 200 successful configuration--default pairs in this representative cell.  The valid-cells column gives the number of the 20 $(n,N)$ cells with at least one successful configuration--default pair.  Failures are counted over all 4,000 planned fits per configuration.  Parentheses contain Monte Carlo standard errors, and bold type identifies the untouched Gaussian default."
+  )
+  if (mark_red) caption <- paste0("\\textcolor{red}{", caption, "}")
   lines <- c(
     "% Parentheses contain Monte Carlo standard errors.",
     "\\begin{table}[tbp]",
+    if (mark_red) "\\color{red}",
+    if (mark_red) c("\\makeatletter",
+      "\\renewcommand{\\fnum@table}{\\color{red}\\tablename~\\thetable}",
+      "\\makeatother"),
     "\\centering",
-    "\\caption{Sensitivity of the proposed method to the temporal smoothing kernel and joint bandwidth multiplier $c_h$ under Setting~1.  Absolute results are shown for the prespecified representative cell $n=100$, $N=5$, and $m=200$.  The paired percentage change is the Monte Carlo mean of the replication-level changes relative to the default.  All configurations had 200 successful fits and 200 successful configuration--default pairs in this representative cell.  The valid-cells column gives the number of the 20 $(n,N)$ cells with at least one successful configuration--default pair.  Failures are counted over all 4,000 planned fits per configuration.  Parentheses contain Monte Carlo standard errors, and bold type identifies the untouched Gaussian default.}",
-    "\\label{tab:sensitivity}",
+    paste0("\\caption{", caption, "}"),
+    if (latent) "\\label{tab:sensitivity-latent-ce}" else if (methodXi == "IN") "\\label{tab:sensitivity-in}" else "\\label{tab:sensitivity}",
     "\\small",
     "\\setlength{\\tabcolsep}{3.2pt}",
     "\\resizebox{\\linewidth}{!}{%",
@@ -226,6 +264,7 @@ read_summary <- function(path) {
 }
 
 validate_full_summaries <- function(summary_abs, summary_pair, across, failures) {
+  summary_estimator(list(summary_abs, summary_pair, across, failures))
   require_true(nrow(summary_abs) == 300L,
                "summary_by_cell.csv must contain 300 rows")
   require_true(nrow(summary_pair) == 300L,
@@ -279,13 +318,15 @@ generate_sensitivity_table <- function(summary_dir, table_out) {
   across <- read_summary(file.path(summary_dir, "summary_across_cells.csv"))
   failures <- read_summary(file.path(summary_dir, "failure_summary_by_config.csv"))
   validate_full_summaries(summary_abs, summary_pair, across, failures)
+  methodXi <- summary_estimator(list(summary_abs, summary_pair, across, failures))$methodXi
+  representative_N <- if (methodXi == "IN") 20L else 5L
 
   representative_abs <- summary_abs[
-    summary_abs$n == 100 & summary_abs$N == 5 & summary_abs$m == 200,
+    summary_abs$n == 100 & summary_abs$N == representative_N & summary_abs$m == 200,
     , drop = FALSE
   ]
   representative_pair <- summary_pair[
-    summary_pair$n == 100 & summary_pair$N == 5 & summary_pair$m == 200,
+    summary_pair$n == 100 & summary_pair$N == representative_N & summary_pair$m == 200,
     , drop = FALSE
   ]
   write_sensitivity_table(

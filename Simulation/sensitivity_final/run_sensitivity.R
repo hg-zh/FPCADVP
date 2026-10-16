@@ -19,7 +19,7 @@ get_script_dir <- function() {
   full_args <- commandArgs(trailingOnly = FALSE)
   file_arg <- grep("^--file=", full_args, value = TRUE)
   if (length(file_arg) > 0L) {
-    script_path <- sub("^--file=", "", file_arg[1L])
+    script_path <- gsub("~+~", " ", sub("^--file=", "", file_arg[1L]), fixed = TRUE)
     return(dirname(normalizePath(script_path, mustWork = TRUE)))
   }
   normalizePath(getwd(), mustWork = TRUE)
@@ -245,6 +245,7 @@ extract_fit_info <- function(fit) {
   internal_timings <- fpca$timings %||% numeric(0)
 
   list(
+    fit_latent = if (is.logical(fit$latent) && length(fit$latent) == 1L) fit$latent else NA,
     actual_kernel = scalar_chr_or_na(optns$kernel),
     actual_bw_mu = scalar_num_or_na(fpca$bwMu),
     actual_bw_cov = scalar_num_or_na(fpca$bwCov),
@@ -281,7 +282,26 @@ extract_fit_info <- function(fit) {
 ## They are called outside run_timed(): treating a contract mismatch as an
 ## ordinary failed fit would silently analyze a design other than the recorded
 ## kernel/bandwidth design.
-validate_default_fit <- function(info, time_range, cell_label) {
+validate_latent_fit <- function(info, latent, Z_cap, cell_label) {
+  if (!identical(info$fit_latent, latent)) {
+    stop("LATENT_OPTION_MISMATCH at ", cell_label)
+  }
+  if (latent) {
+    if (!close_numeric(info$diagnostic_Z_cap, Z_cap) ||
+        !is.finite(info$diagnostic_max_abs_Z_used) ||
+        info$diagnostic_max_abs_Z_used < 0 ||
+        info$diagnostic_max_abs_Z_used > Z_cap + 1e-10) {
+      stop("LATENT_DIAGNOSTIC_MISMATCH at ", cell_label)
+    }
+  } else if (!is.na(info$diagnostic_Z_cap) ||
+             !is.na(info$diagnostic_max_abs_Z_used)) {
+    stop("NONLATENT_DIAGNOSTIC_MISMATCH at ", cell_label)
+  }
+  invisible(TRUE)
+}
+
+validate_default_fit <- function(info, time_range, cell_label, methodXi, latent, Z_cap) {
+  validate_latent_fit(info, latent, Z_cap, cell_label)
   expected_bw_mu <- 0.05 * time_range
   expected_bw_cov <- 0.10 * time_range
   mismatches <- character(0)
@@ -294,7 +314,7 @@ validate_default_fit <- function(info, time_range, cell_label) {
   if (!identical(info$fpca_method_mu_cov_est, "smooth")) {
     mismatches <- c(mismatches, paste0("methodMuCovEst=", info$fpca_method_mu_cov_est))
   }
-  if (!identical(info$fpca_method_xi, "CE")) {
+  if (!identical(info$fpca_method_xi, methodXi)) {
     mismatches <- c(mismatches, paste0("methodXi=", info$fpca_method_xi))
   }
   if (!identical(info$fpca_method_bw_mu, "Default")) {
@@ -319,7 +339,8 @@ validate_default_fit <- function(info, time_range, cell_label) {
 }
 
 validate_explicit_fit <- function(info, kernel, requested_bw_mu, requested_bw_cov,
-                                  cell_label, config_id) {
+                                  cell_label, config_id, methodXi, latent, Z_cap) {
+  validate_latent_fit(info, latent, Z_cap, paste(cell_label, config_id, sep = " / "))
   mismatches <- character(0)
   if (!identical(info$actual_kernel, kernel)) {
     mismatches <- c(mismatches, paste0("kernel=", info$actual_kernel,
@@ -339,7 +360,7 @@ validate_explicit_fit <- function(info, kernel, requested_bw_mu, requested_bw_co
   }
   if (!identical(info$fpca_data_type, "Sparse") ||
       !identical(info$fpca_method_mu_cov_est, "smooth") ||
-      !identical(info$fpca_method_xi, "CE")) {
+      !identical(info$fpca_method_xi, methodXi)) {
     mismatches <- c(mismatches, "returned FPCA method options differ from fixed design")
   }
   if (length(mismatches) > 0L) {
@@ -358,6 +379,7 @@ empty_baseline_norm_info <- function() {
 
 empty_fit_info <- function() {
   list(
+    fit_latent = NA,
     actual_kernel = NA_character_, actual_bw_mu = NA_real_, actual_bw_cov = NA_real_,
     option_user_bw_mu = NA_real_, option_user_bw_cov = NA_real_,
     fpca_data_type = NA_character_, fpca_method_bw_mu = NA_character_,
@@ -423,6 +445,7 @@ make_result_row <- function(cfg, tune, rep_id, n, N, m, seed,
     bandwidth_mode = as.character(bandwidth_mode),
     user_bw_supplied = isTRUE(user_bw_supplied),
     latent = cfg$latent,
+    fit_latent = as.logical(fit_info$fit_latent),
     methodXi = cfg$methodXi,
     methodMuCovEst = cfg$methodMuCovEst,
     eps_u = cfg$eps_u,
@@ -642,7 +665,8 @@ run_one_rep <- function(rep_id, cfg, tuning_grid, rep_dir, mod_script) {
 
         default_fit <- default_fit_result$value
         default_info <- extract_fit_info(default_fit)
-        validate_default_fit(default_info, time_range, cell_label)
+        validate_default_fit(default_info, time_range, cell_label,
+                             cfg$methodXi, cfg$latent, cfg$Z_cap)
         base_bw_mu <- default_info$actual_bw_mu
         base_bw_cov <- default_info$actual_bw_cov
 
@@ -707,7 +731,7 @@ run_one_rep <- function(rep_id, cfg, tuning_grid, rep_dir, mod_script) {
           fit_info <- extract_fit_info(fit)
           validate_explicit_fit(
             fit_info, as.character(tune$kernel), requested_bw_mu, requested_bw_cov,
-            cell_label, as.character(tune$config_id)
+            cell_label, as.character(tune$config_id), cfg$methodXi, cfg$latent, cfg$Z_cap
           )
           eval_result <- run_timed(function() {
             evaluate_transport_fit(fit, truth, cfg$t_grid_out, sim$xgrid)
@@ -833,7 +857,9 @@ if (mode == "full") {
 }
 
 latent <- parse_bool(kv$latent, FALSE, "latent")
-methodXi <- trimws(kv$methodXi %||% "CE")
+methodXi <- trimws(kv$methodXi %||% "IN")
+if (!(methodXi %in% c("CE", "IN"))) stop("methodXi must be CE or IN")
+if (latent && methodXi != "CE") stop("latent=TRUE requires methodXi=CE in this study")
 decayR <- parse_num_scalar(kv$decayR, 1, "decayR", lower = 0, lower_open = TRUE)
 beta_a <- parse_num_vec(kv$beta_a, c(0.6, 3), "beta_a")
 beta_b <- parse_num_vec(kv$beta_b, c(0.6, 3), "beta_b")
@@ -845,7 +871,7 @@ u_cap <- parse_num_scalar(kv$u_cap, 0.95, "u_cap", lower = 0, upper = 1,
 Z_cap <- parse_num_scalar(kv$Z_cap, 8, "Z_cap", lower = 0, lower_open = TRUE)
 t_grid_len <- parse_int_scalar(kv$t_grid_len, 51L, "t_grid_len", lower = 2L)
 
-if (latent || methodXi != "CE" || !close_numeric(decayR, 1) ||
+if (!close_numeric(decayR, 1) ||
     !same_numeric_values(beta_a, c(0.6, 3)) ||
     !same_numeric_values(beta_b, c(0.6, 3)) || t_design != "random" ||
     !close_numeric(eps_u, 0.05) || !close_numeric(u_cap, 0.95) ||
@@ -869,7 +895,8 @@ if (!is.na(allocated_cores) && cores_requested > allocated_cores) {
 cores_used <- min(cores_requested, reps)
 
 run_id_default <- if (nzchar(slurm_job_id)) {
-  paste0(mode, "_", slurm_job_id,
+  paste0(mode, if (latent) "_latent_CE" else if (methodXi == "IN") "_IN" else "",
+         "_", slurm_job_id,
          if (nzchar(slurm_array_task_id)) paste0("_", slurm_array_task_id) else "")
 } else {
   paste0("check_", format(Sys.time(), "%Y%m%dT%H%M%S"), "_", Sys.getpid())
@@ -880,7 +907,7 @@ if (!grepl("^[A-Za-z0-9][A-Za-z0-9._-]*$", run_id)) {
 }
 
 mod_script_arg <- kv$mod_script %||%
-  file.path(script_dir, "..", "Simulation", "parallel_run", "transport_fpca_modular.R")
+  file.path(script_dir, "..", "parallel_run", "transport_fpca_modular.R")
 if (!file.exists(mod_script_arg) && !grepl("^/", mod_script_arg)) {
   mod_script_arg <- file.path(script_dir, mod_script_arg)
 }
@@ -940,10 +967,13 @@ probe_y <- list(
   c(-0.4, 0.1, 0.5), c(-0.2, 0.2, 0.6), c(-0.3, 0.0, 0.4),
   c(-0.1, 0.3, 0.7), c(-0.5, -0.1, 0.3)
 )
-implicit_probe <- set_options(probe_y, probe_t, list(methodMuCovEst = "smooth"))
+implicit_probe <- set_options(
+  probe_y, probe_t, list(methodMuCovEst = "smooth", methodXi = methodXi)
+)
 probe_range <- diff(range(unlist(probe_t)))
 if (!identical(implicit_probe$kernel, "gauss") ||
     !identical(implicit_probe$dataType, "Sparse") ||
+    !identical(implicit_probe$methodXi, methodXi) ||
     !identical(implicit_probe$methodBwMu, "Default") ||
     !identical(implicit_probe$methodBwCov, "Default") ||
     !close_numeric(implicit_probe$userBwMu, 0.05 * probe_range) ||
@@ -954,6 +984,7 @@ explicit_probe <- set_options(
   probe_y, probe_t,
   list(
     methodMuCovEst = "smooth",
+    methodXi = methodXi,
     kernel = implicit_probe$kernel,
     userBwMu = implicit_probe$userBwMu,
     userBwCov = implicit_probe$userBwCov
@@ -1000,7 +1031,9 @@ if (any(!is.finite(tuning_grid$kernel_bw_scale)) ||
 }
 
 t_grid_out <- seq(0, 1, length.out = t_grid_len)
-outdir_arg <- kv$outdir %||% file.path(getwd(), paste0("sensitivity_", run_id))
+procedure_dir <- if (latent) "estimator14_CE" else if (methodXi == "IN") "estimator13_IN" else "direct_U_CE"
+outdir_arg <- kv$outdir %||% file.path(script_dir, "results",
+  paste0(if (mode == "smoke") "smoke_" else "", procedure_dir))
 
 cfg <- list(
   run_id = run_id,
@@ -1053,6 +1086,7 @@ if (check_only) {
   cat("R version:", r_version, "\n")
   cat("fdapace version:", fdapace_version, "\n")
   cat("dependency md5:", dependency_md5, "\n")
+  cat("procedure: latent=", latent, ", methodXi=", methodXi, "\n", sep = "")
   cat("implicit defaults: kernel=gauss, bwMu=0.05*time_range, bwCov=0.10*time_range\n")
   cat("standard kernel second moments:",
       paste(paste0(names(kernel_second_moments), "=", format(kernel_second_moments,
@@ -1119,6 +1153,7 @@ atomic_write_csv(config_csv, file.path(outdir, "run_config.csv"))
 cat("\n===== kernel/bandwidth sensitivity analysis =====\n")
 cat("run_id:", cfg$run_id, "\n")
 cat("mode:", cfg$mode, "\n")
+cat("procedure: latent=", cfg$latent, ", methodXi=", cfg$methodXi, "\n", sep = "")
 cat("outdir:", outdir, "\n")
 cat("reps:", reps, "; cells per rep:",
     length(n_vec) * length(N_vec) * length(m_vec), "\n")
@@ -1153,7 +1188,7 @@ worker_exports <- c(
   "%||%", "atomic_save_rds", "run_timed", "interp_Tmat_time_sensitivity",
   "evaluate_transport_fit", "scalar_num_or_na", "scalar_int_or_na",
   "scalar_chr_or_na", "extract_fit_info", "empty_fit_info", "close_numeric",
-  "validate_default_fit", "validate_explicit_fit", "empty_baseline_norm_info",
+  "validate_latent_fit", "validate_default_fit", "validate_explicit_fit", "empty_baseline_norm_info",
   "make_result_row", "run_one_rep"
 )
 parallel::clusterExport(cluster, varlist = worker_exports, envir = environment())
@@ -1321,6 +1356,8 @@ metadata <- list(
 atomic_save_rds(metadata, file.path(outdir, "run_metadata.rds"))
 metadata_text <- c(
   paste0("run_id: ", metadata$run_id),
+  paste0("latent: ", cfg$latent),
+  paste0("methodXi: ", cfg$methodXi),
   paste0("status: ", metadata$status),
   paste0("start_time: ", format(metadata$start_time, tz = "UTC", usetz = TRUE)),
   paste0("end_time: ", format(metadata$end_time, tz = "UTC", usetz = TRUE)),

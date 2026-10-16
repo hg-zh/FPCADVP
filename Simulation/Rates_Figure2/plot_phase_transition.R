@@ -1,30 +1,38 @@
-## plot_phase_transition_ggplot.R
+#!/usr/bin/env Rscript
+## plot_phase_transition.R
 ## ------------------------------------------------------------
-## Interactive ggplot2 script for RStudio
+## Figure 2, left: direct-U FPCA with numerical-integration scores.
+## Optional CLI arguments: outdir=/path/to/results, display=paper (default) or full.
 ## ------------------------------------------------------------
-setwd("~/Documents/research/Hans/random object/JRSSB_RR1/Final_Code/Simulation/Rates_Figure2")
 options(stringsAsFactors = FALSE)
 
-## Close old graphics devices if needed
-try(graphics.off(), silent = TRUE)
+script_arg <- grep("^--file=", commandArgs(), value = TRUE)
+source_file <- if (length(sys.frames())) sys.frames()[[1]]$ofile else NULL
+script_path <- if (length(script_arg)) gsub("~+~", " ", sub("^--file=", "", script_arg[1]), fixed = TRUE) else source_file
+if (is.null(script_path)) {
+  candidates <- c("plot_phase_transition.R", "Code/Simulation/Rates_Figure2/plot_phase_transition.R")
+  script_path <- candidates[file.exists(candidates)][1]
+}
+script_dir <- dirname(normalizePath(script_path, mustWork = TRUE))
 
-library(ggplot2)
+suppressPackageStartupMessages(library(ggplot2))
 
 read_summary <- function(path) {
   if (!file.exists(path)) stop("Cannot find summary file: ", path)
   utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
 }
 
-tail_curve_slopes <- function(df, slope_n_min) {
+display_curve_slopes <- function(df) {
   out <- lapply(sort(unique(df$N)), function(N_val) {
-    dd <- df[df$N == N_val & df$n >= slope_n_min, , drop = FALSE]
-    if (nrow(dd) < 2) dd <- df[df$N == N_val, , drop = FALSE]
+    dd <- df[df$N == N_val, , drop = FALSE]
     
     fit <- stats::lm(log(mean_imse) ~ log(n), data = dd)
     
     data.frame(
       N = N_val,
-      tail_slope = unname(stats::coef(fit)[["log(n)"]]),
+      n_min = min(dd$n),
+      n_max = max(dd$n),
+      displayed_slope = unname(stats::coef(fit)[["log(n)"]]),
       stringsAsFactors = FALSE
     )
   })
@@ -34,17 +42,20 @@ tail_curve_slopes <- function(df, slope_n_min) {
 ## ------------------------------------------------------------
 ## User settings
 ## ------------------------------------------------------------
-outdir <- "outputs"
+outdir <- "outputs/estimator13_IN"
+outdir_arg <- grep("^outdir=", commandArgs(trailingOnly = TRUE), value = TRUE)
+if (length(outdir_arg)) outdir <- sub("^outdir=", "", tail(outdir_arg, 1))
+if (!grepl("^/", outdir)) outdir <- file.path(script_dir, outdir)
 summary_path <- file.path(outdir, "summary_densegrid.csv")
-outfile <- file.path(outdir, "figures", "loglog_phase_transition_densegrid.pdf")
+display_arg <- grep("^display=", commandArgs(trailingOnly = TRUE), value = TRUE)
+display <- if (length(display_arg)) sub("^display=", "", tail(display_arg, 1)) else "paper"
+if (!display %in% c("paper", "full")) stop("display must be 'paper' or 'full'.")
+file_stem <- if (display == "paper") "rate_decay_IN" else "rate_decay_IN_full_grid"
+outfile <- file.path(outdir, "figures", paste0(file_stem, ".pdf"))
 
 m_target <- 200
 slope_n_min <- 70
 show_error_bars <- FALSE
-
-## visible x-range
-x_min_plot <- 2.95
-x_max_plot <- 5.05
 
 ## theory line placement
 anchor_N <- 10
@@ -55,22 +66,35 @@ theory_shift <- -0.04
 ## ------------------------------------------------------------
 sum_df <- read_summary(summary_path)
 
-need_cols <- c("n", "N", "m", "mean_imse")
+need_cols <- c("n", "N", "m", "mean_imse", "a_poly", "theoretical_slope")
 missing_cols <- setdiff(need_cols, names(sum_df))
 if (length(missing_cols) > 0) {
   stop("summary file is missing required columns: ",
        paste(missing_cols, collapse = ", "))
 }
 
-df <- sum_df[
-  sum_df$m == m_target &
-    is.finite(sum_df$mean_imse) &
-    sum_df$mean_imse > 0,
-  ,
-  drop = FALSE
-]
+df <- sum_df[sum_df$m == m_target, , drop = FALSE]
+if (nrow(df) == 0) stop("No rows found for m = ", m_target)
+if (any(!is.finite(df$mean_imse) | df$mean_imse <= 0 |
+        !is.finite(df$n) | df$n <= 0 | !is.finite(df$N) | df$N <= 0)) {
+  stop("All summary cells must have finite positive n, N, and mean_imse.")
+}
+if (anyDuplicated(df[c("n", "N")])) stop("Duplicate (n, N) cells in summary.")
+if (nrow(df) != length(unique(df$n)) * length(unique(df$N))) {
+  stop("Summary does not contain the complete (n, N) grid.")
+}
 
-if (nrow(df) == 0) stop("No finite positive rows found for m = ", m_target)
+# The manuscript display uses the requested range. Preserve the full simulation
+# summary and provide display=full to reproduce all 42 simulated cells.
+total_cells <- nrow(df)
+if (display == "paper") {
+  n_display <- c(20L, 30L, 40L, 50L, 70L, 100L)
+  N_display <- c(3L, 4L, 5L, 7L, 10L)
+  df <- df[df$n %in% n_display & df$N %in% N_display, , drop = FALSE]
+  if (nrow(df) != length(n_display) * length(N_display)) {
+    stop("Summary does not contain the complete manuscript display grid.")
+  }
+}
 
 df$log_n <- log(df$n)
 df$log_imse <- log(df$mean_imse)
@@ -84,8 +108,8 @@ if (show_error_bars && "se_imse" %in% names(df)) {
   df$log_hi <- log(df$imse_hi)
 }
 
-## optional: compute tail slopes for your own checking
-slope_df <- tail_curve_slopes(df, slope_n_min = slope_n_min)
+## Descriptive slopes of log(mean IMSE) over the exact displayed range.
+slope_df <- display_curve_slopes(df)
 print(slope_df)
 
 ## ------------------------------------------------------------
@@ -97,37 +121,35 @@ df$series <- factor(as.character(df$N), levels = line_labels)
 ## ------------------------------------------------------------
 ## Theoretical slope line
 ## ------------------------------------------------------------
-ref_slope <- if ("theoretical_slope" %in% names(df)) df$theoretical_slope[1] else NA_real_
-a_poly <- if ("a_poly" %in% names(df)) df$a_poly[1] else NA_real_
-
-if (is.finite(ref_slope)) {
-  anchor_df <- df[df$N == anchor_N & df$n >= slope_n_min, , drop = FALSE]
-  if (nrow(anchor_df) == 0) anchor_df <- df[df$N == anchor_N, , drop = FALSE]
-  if (nrow(anchor_df) == 0) stop("No rows found for anchor_N = ", anchor_N)
-  
-  x0 <- mean(anchor_df$log_n)
-  y0 <- mean(anchor_df$log_imse) + theory_shift
-  
-  x_ref <- seq(x_min_plot, x_max_plot, length.out = 200)
-  y_ref <- y0 + ref_slope * (x_ref - x0)
-  
-  ref_df <- data.frame(
-    log_n = x_ref,
-    log_imse = y_ref
-  )
-} else {
-  ref_df <- NULL
+a_poly <- unique(df$a_poly)
+if (length(a_poly) != 1 || !is.finite(a_poly) || a_poly <= 1) {
+  stop("Summary must specify one finite eigenvalue-decay exponent a > 1.")
+}
+# Corollary 1's algebraic benchmark, omitting logarithmic factors.
+# This is -1/8 = -0.125 when a = 2; the vertical placement is arbitrary.
+ref_slope <- -(a_poly - 1) / (3 * a_poly + 2)
+if (any(!is.finite(df$theoretical_slope)) ||
+    any(abs(df$theoretical_slope - ref_slope) > 1e-10)) {
+  stop("Saved reference slope disagrees with -(a-1)/(3a+2); rerun the corrected driver.")
 }
 
-## ------------------------------------------------------------
-## Keep only visible data
-## ------------------------------------------------------------
-df_plot <- df[df$log_n >= x_min_plot & df$log_n <= x_max_plot, , drop = FALSE]
-if (nrow(df_plot) == 0) {
-  stop("No data remain inside the chosen x-range.")
-}
+anchor_df <- df[df$N == anchor_N & df$n >= slope_n_min, , drop = FALSE]
+if (nrow(anchor_df) == 0) anchor_df <- df[df$N == anchor_N, , drop = FALSE]
+if (nrow(anchor_df) == 0) stop("No rows found for anchor_N = ", anchor_N)
+x0 <- mean(anchor_df$log_n)
+y0 <- mean(anchor_df$log_imse) + theory_shift
+x_pad <- max(0.025 * diff(range(df$log_n)), 0.025)
+xlim <- range(df$log_n) + c(-x_pad, x_pad)
+x_ref <- seq(xlim[1], xlim[2], length.out = 200)
+ref_df <- data.frame(log_n = x_ref, log_imse = y0 + ref_slope * (x_ref - x0))
+message(sprintf("Algebraic reference slope: %.6f; displaying %d of %d cells, n = %s, N = %s.",
+                ref_slope, nrow(df), total_cells, paste(sort(unique(df$n)), collapse = ", "),
+                paste(N_levels, collapse = ", ")))
 
-xlim <- c(x_min_plot, x_max_plot)
+## ------------------------------------------------------------
+## Show every cell in the documented display range.
+## ------------------------------------------------------------
+df_plot <- df
 
 if (show_error_bars && all(c("log_lo", "log_hi") %in% names(df_plot))) {
   ylim <- range(c(df_plot$log_lo, df_plot$log_hi, df_plot$log_imse), finite = TRUE)
@@ -196,7 +218,8 @@ p <- p +
     breaks = legend_breaks,
     name = "N"
   ) +
-  scale_y_continuous(breaks = c(-6.0, -5.5)) +
+  scale_x_continuous(n.breaks = 5) +
+  scale_y_continuous(n.breaks = 4) +
   coord_cartesian(xlim = xlim, ylim = ylim, expand = FALSE) +
   labs(
     x = "log(n)",
@@ -207,12 +230,12 @@ p <- p +
     panel.grid.major = element_line(color = "grey92"),
     panel.grid.minor = element_blank(),
     panel.border = element_blank(),
-    axis.title.x = element_text(size = 16),
-    axis.title.y = element_text(size = 16),
-    axis.text.x = element_text(size = 14),
-    axis.text.y = element_text(size = 14),
-    legend.title = element_text(size = 16),
-    legend.text = element_text(size = 14),
+    axis.title.x = element_text(size = 22),
+    axis.title.y = element_text(size = 22),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    legend.title = element_text(size = 22),
+    legend.text = element_text(size = 20),
     legend.position = "right",
     legend.justification = "center",
     legend.margin = margin(l = 6),
@@ -233,11 +256,23 @@ p <- p +
 ## ------------------------------------------------------------
 ## Show in RStudio Plots pane
 ## ------------------------------------------------------------
-print(p)
+if (interactive()) print(p)
 
 ## ------------------------------------------------------------
-## Optional: save after you are happy with the plot
+## Save without opening an incidental Rplots.pdf in noninteractive runs.
 ## ------------------------------------------------------------
-# dir.create(dirname(outfile), recursive = TRUE, showWarnings = FALSE)
+dir.create(dirname(outfile), recursive = TRUE, showWarnings = FALSE)
 ggsave(outfile, plot = p, width = 500/72, height = 400/72, units = "in", bg = "white")
+write.csv(df[c("n", "N", "m", "reps_ok", "mean_imse", "se_imse", "theoretical_slope")],
+          file.path(dirname(outfile), paste0(file_stem, "_cells.csv")), row.names = FALSE)
+write.csv(slope_df, file.path(dirname(outfile), paste0(file_stem, "_slopes.csv")), row.names = FALSE)
+writeLines(c(
+  paste("Display:", display),
+  sprintf("Shown cells: %d of %d; n = %s; N = %s.", nrow(df), total_cells,
+          paste(sort(unique(df$n)), collapse = ", "), paste(N_levels, collapse = ", ")),
+  "The manuscript display excludes N=20 and n=150 (log(n) approximately 5).",
+  "Complete raw results, summaries and full-range slope estimates are retained unchanged.",
+  "Use display=full to reproduce the complete simulation grid.",
+  sprintf("Reference slope: %.6f; reference height is arbitrary.", ref_slope)
+), file.path(dirname(outfile), paste0(file_stem, "_display.txt")))
 

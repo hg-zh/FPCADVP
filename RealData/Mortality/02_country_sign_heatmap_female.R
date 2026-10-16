@@ -6,10 +6,21 @@
 # Parameters
 # =========================
 
-project_root <- NULL
-helper_file <- file.path("mortality_repro_functions.R")
+# Resolve adjacent files from the entrypoint, independently of the working directory.
+script_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+if (length(script_file)) {
+  script_file <- sub("^--file=", "", script_file[1])
+} else {
+  script_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (is.null(script_file) && requireNamespace("rstudioapi", quietly = TRUE)) {
+    script_file <- rstudioapi::getSourceEditorContext()$path
+  }
+}
+if (is.null(script_file) || !nzchar(script_file)) stop("Run this file with Rscript or Source.")
+project_root <- dirname(normalizePath(gsub("~+~", " ", script_file, fixed = TRUE), mustWork = TRUE))
+helper_file <- file.path(project_root, "mortality_repro_functions.R")
 sex <- "Female"
-output_dir <- file.path("output")
+output_dir <- file.path(dirname(helper_file), "output", "estimator13_IN")
 output_filename <- if (tolower(sex) == "female") "countries_F.pdf" else "countries_M.pdf"
 
 # Use the row order from the saved legacy figure for a closer visual match.

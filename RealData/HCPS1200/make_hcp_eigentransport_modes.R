@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 # RStudio-friendly generator for outputs/figures/hcp_eigentransport_modes.pdf.
-# Run scripts/run_hcp_eigentransport_fit.R first if the fit object does not exist.
+# Run run_hcp_eigentransport_fit.R first if the fit object does not exist.
 
 suppressPackageStartupMessages({
   library(ggplot2)
@@ -19,14 +19,29 @@ out_pdf <- NULL
 
 
 
-project_root <- "/Users/hangzhou/Documents/research/Hans/random object/JRSSB_RR1/Final_Code/RealData/HCPS1200"
-setwd(project_root)
+# Paths default to this application directory, regardless of the working directory.
+script_file <- grep("^--file=", commandArgs(FALSE), value = TRUE)
+if (length(script_file)) {
+  script_file <- sub("^--file=", "", script_file[1])
+} else {
+  script_file <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (is.null(script_file) && requireNamespace("rstudioapi", quietly = TRUE)) {
+    script_file <- rstudioapi::getSourceEditorContext()$path
+  }
+}
+if (is.null(script_file) || !nzchar(script_file)) stop("Run this file with Rscript or Source.")
+script_dir <- dirname(normalizePath(gsub("~+~", " ", script_file, fixed = TRUE), mustWork = TRUE))
+source(file.path(script_dir, "hcp_paths.R"))
+kv <- hcp_parse_args(commandArgs(trailingOnly = TRUE))
+project_root <- kv$root %||% script_dir
+hcp_path <- function(path) hcp_resolve_path(path, project_root)
+
 
 if (is.null(fit_rds)) {
-  fit_rds <- file.path(project_root, "outputs", "hcp_transport_fpca_fits.rds")
+  fit_rds <- hcp_path(kv$fit_rds %||% "outputs/hcp_transport_fpca_fits.rds")
 }
 if (is.null(out_pdf)) {
-  out_pdf <- file.path(project_root, "outputs", "figures", "hcp_eigentransport_modes.pdf")
+  out_pdf <- hcp_path(kv$out_pdf %||% "outputs/figures/hcp_eigentransport_modes.pdf")
 }
 
 log_file <- file.path(project_root, "logs", "make_hcp_eigentransport_modes.log")
@@ -51,7 +66,7 @@ project_transport <- function(Tx) {
 }
 
 if (!file.exists(fit_rds)) {
-  stop("Fit object not found at ", fit_rds, ". Run scripts/run_hcp_eigentransport_fit.R first.")
+  stop("Fit object not found at ", fit_rds, ". Run run_hcp_eigentransport_fit.R first.")
 }
 
 obj <- readRDS(fit_rds)

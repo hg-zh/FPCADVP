@@ -22,10 +22,9 @@
 ##       and (optional) matching PDFs if save_mse_plots=TRUE
 ##
 ## Example:
-##   module load r/4.5.0
-##   Rscript para_R2_mse_t_refined.R outdir=Res_LatentF_CE_decay1 \
-##     reps=200 latent=FALSE methodXi=CE decayR=1 \
-##     save_mse_t=TRUE save_mse_plots=FALSE t_grid_len=51 u_cap=0.90
+##   Rscript para_R2_mse_t_refined.R outdir=results/paper_comparison/proposed_latent_CE/setting2 \
+##     reps=200 latent=TRUE methodXi=CE decayR=1 \
+##     save_mse_t=TRUE save_mse_plots=FALSE t_grid_len=51 u_cap=0.95
 ## ------------------------------------------------------------
 
 options(stringsAsFactors = FALSE)
@@ -63,10 +62,10 @@ parse_int_vec <- function(x) {
 }
 
 parse_num_vec <- function(x) {
-  s <- paste(as.character(x), collapse = "")   # robust if x is vector
+  s <- paste(as.character(x), collapse = ",")
   s <- gsub("\\s+", "", s)
-  nums <- regmatches(s, gregexpr("-?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?", s))[[1]]
-  as.numeric(nums)
+  if (nchar(s) == 0) return(numeric(0))
+  suppressWarnings(as.numeric(strsplit(s, ",", fixed = TRUE)[[1]]))
 }
 
 
@@ -97,12 +96,17 @@ call_with_supported_args <- function(fn, args) {
   do.call(fn, args2)
 }
 
+# Default dependencies and outputs are relative to this distributed script.
+script_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+if (length(script_arg) != 1L) stop("Run this driver with Rscript.")
+script_dir <- dirname(normalizePath(gsub("~+~", " ", sub("^--file=", "", script_arg), fixed = TRUE), mustWork = TRUE))
+
 kv <- parse_kv_args(commandArgs(trailingOnly = TRUE))
 
 # ---- config (defaults) ----
 reps       <- if (!is.null(kv$reps)) as.integer(kv$reps) else 200
 seed_base  <- if (!is.null(kv$seed_base)) as.integer(kv$seed_base) else 2000
-outdir     <- kv$outdir %||% "Res_R2_prop"
+outdir     <- kv$outdir %||% file.path(script_dir, "results", "paper_comparison", "proposed_latent_CE", "setting2")
 t_design   <- kv$t_design %||% "random"   # random|fixed
 
 latent     <- if (!is.null(kv$latent)) as_bool(kv$latent, default = TRUE) else TRUE
@@ -120,20 +124,12 @@ Z_cap <- if (!is.null(kv$Z_cap)) as_num_or_na(kv$Z_cap) else 8
 beta_a <- if (!is.null(kv$beta_a) && nchar(trimws(kv$beta_a)) > 0) parse_num_vec(kv$beta_a) else c(3,4)
 beta_b <- if (!is.null(kv$beta_b) && nchar(trimws(kv$beta_b)) > 0) parse_num_vec(kv$beta_b) else c(1,2)
 
-# hard-stop if parsing is wrong (prevents “all NA” mystery runs)
-if (length(beta_a) != 2 || any(!is.finite(beta_a)) || any(beta_a <= 0)) {
-  stop("beta_a parsing failed. kv$beta_a=", kv$beta_a, "  parsed=", paste(beta_a, collapse=","))
-}
-if (length(beta_b) != 2 || any(!is.finite(beta_b)) || any(beta_b <= 0)) {
-  stop("beta_b parsing failed. kv$beta_b=", kv$beta_b, "  parsed=", paste(beta_b, collapse=","))
-}
-
-# hard-stop if parsing is wrong (prevents “all NA” mystery runs)
-if (length(beta_a) != 2 || any(!is.finite(beta_a)) || any(beta_a <= 0)) {
-  stop("beta_a parsing failed. kv$beta_a=", kv$beta_a, "  parsed=", paste(beta_a, collapse=","))
-}
-if (length(beta_b) != 2 || any(!is.finite(beta_b)) || any(beta_b <= 0)) {
-  stop("beta_b parsing failed. kv$beta_b=", kv$beta_b, "  parsed=", paste(beta_b, collapse=","))
+for (beta_name in c("beta_a", "beta_b")) {
+  beta_range <- get(beta_name)
+  if (length(beta_range) != 2 || any(!is.finite(beta_range)) ||
+      any(beta_range <= 0) || beta_range[1] >= beta_range[2]) {
+    stop(beta_name, " must be a finite, positive, increasing pair")
+  }
 }
 
 save_each_rep <- if (!is.null(kv$save_each_rep)) as_bool(kv$save_each_rep, TRUE) else TRUE
@@ -159,13 +155,13 @@ if (length(m_vec) < 1 || any(!is.finite(m_vec))) stop("m_vec is empty or invalid
 cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_CPUS_PER_TASK")))
 if (!is.finite(cores) || cores < 1) cores <- suppressWarnings(as.integer(Sys.getenv("SLURM_NTASKS")))
 if ((!is.finite(cores) || cores < 1) && !is.null(kv$cores)) cores <- as.integer(kv$cores)
-if (!is.finite(cores) || cores < 1) cores <- 20
+if (!is.finite(cores) || cores < 1) cores <- 1
 
 cores_env <- Sys.getenv("SLURM_NTASKS")
 cpus_env  <- Sys.getenv("SLURM_CPUS_PER_TASK")
 
 # ---- locate modular script ----
-mod_script <- kv$mod_script %||% "transport_fpca_modular.R"
+mod_script <- kv$mod_script %||% file.path(script_dir, "transport_fpca_modular.R")
 if (!file.exists(mod_script)) {
   stop(sprintf("Cannot find '%s'. Put transport_fpca_modular.R in the same directory or pass mod_script=PATH.", mod_script))
 }
@@ -196,6 +192,7 @@ rm(tmp_env)
 
 
 # ---- output dirs ----
+if (file.exists(file.path(outdir, "raw_results.rds"))) stop("Refusing to overwrite existing results; choose a new outdir: ", outdir)
 if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
 
 curve_root <- kv$curve_root %||% file.path(outdir, "mse_curves")
@@ -525,6 +522,7 @@ save(
   decayR,
   eps_u, u_cap, Z_cap,
   n_vec, N_vec, m_vec,
+  beta_a, beta_b,
   t_grid_len, t_grid_out,
   cores, run_time, mod_script,
   save_mse_t, save_mse_plots, mse_rep_only,

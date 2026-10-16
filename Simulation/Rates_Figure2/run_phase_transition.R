@@ -9,17 +9,17 @@ suppressMessages(library(parallel))
 # Command-line key=value arguments still override these values.
 run_cfg <- list(
   project_dir = NULL,
-  outdir = "outputs",
-  label = "densegrid",
+  outdir = "outputs/estimator13_IN",
+  label = "estimator13_IN",
   n_vec = c(20L, 30L, 40L, 50L, 70L, 100L, 150L),
-  N_vec = c(3L, 4L, 5L, 7L, 10L),
+  N_vec = c(3L, 4L, 5L, 7L, 10L, 20L),
   m_vec = c(200L),
   reps = 200L,
   seed_base = 20260323L,
   cores = 5L,
   t_design = "random",
-  latent = TRUE,
-  methodXi = "CE",
+  latent = FALSE,
+  methodXi = "IN",
   decayR = 1,
   eps_u = 0.05,
   u_cap = 0.95,
@@ -110,13 +110,10 @@ resolve_outfile <- function(outdir, file_arg, default_basename) {
 
 detect_mod_script <- function(user_path = NULL) {
   if (!is.null(user_path)) return(user_path)
-  candidates <- c(
-    file.path( "transport_fpca_modular.R"),
-    file.path( "transport_fpca_modular.R")
-  )
+  candidates <- file.path(script_dir, "transport_fpca_modular.R")
   hits <- candidates[file.exists(candidates)]
   if (length(hits) == 0) {
-    stop("Could not find transport_fpca_modular.R under proposed_method/ or codes/.")
+    stop("Could not find transport_fpca_modular.R beside the run script.")
   }
   hits[1]
 }
@@ -324,9 +321,12 @@ write_notes <- function(notes_path, config, cell_df, raw_slope_df, curve_slope_d
     "# Phase Transition Run Notes",
     "",
     "## Theory Mapping",
-    sprintf("- Corollary 1 uses slope `-(a-1)/(3a+1)` with polynomial eigenvalue decay `lambda_k ~ k^{-a}`."),
-    sprintf("- Here `decayR = %.2f` means score SDs decay like `k^{-decayR}`, so variances decay like `k^{-2*decayR}` and `a = %.1f`.", config$decayR, config$a_poly),
-    sprintf("- The theoretical log-log slope is `%s`.", fmt_num(config$theoretical_slope, digits = 4)),
+    "- The algebraic part of the dense-regime bound in Corollary 1 has exponent `-(a-1)/(3a+2)`.",
+    sprintf("- `decayR = %.2f` gives latent Z score variances proportional to `k^{-2*decayR}`; the reference uses nominal `a = %.1f`. Nonlinear U = g(Z) does not by itself establish this eigenvalue exponent for U, which is the process in the corollary.", config$decayR, config$a_poly),
+    sprintf("- The algebraic reference slope is `%s`; its vertical intercept is arbitrary.", fmt_num(config$theoretical_slope, digits = 4)),
+    "- This is a finite-sample density comparison, not a verification of an asymptotic rate: N and m are fixed along each curve, logarithmic factors are omitted from the reference, and practical FPCA tuning replaces the asymptotic bandwidth/truncation sequences.",
+    "- FALSE/IN performs FPCA on U with centered trapezoidal score integration, the numerical-integration implementation of estimator (13). The fitted mean, clipping at u_cap, and monotone transport projection are retained from the public implementation.",
+    "- DGP retained from the archived run: 50 unnormalized cosine basis functions, latent Gaussian score variances k^{-2}, Beta baseline parameters a in [3,4] and b in [1,2], and random observation times. The baseline parameters are those of Setting 2; the cosine normalization differs from the main simulation description.",
     "",
     "## Final Settings",
     sprintf("- Grid: `n = c(%s)`, `N = c(%s)`, `m = c(%s)`.", paste(config$n_vec, collapse = ", "), paste(config$N_vec, collapse = ", "), paste(config$m_vec, collapse = ", ")),
@@ -351,7 +351,7 @@ write_notes <- function(notes_path, config, cell_df, raw_slope_df, curve_slope_d
     "## Diagnostics",
     diag_lines,
     "",
-    "## Flattening Diagnosis",
+    "## Comparison Scope",
     extra_lines,
     "",
     "## Failure Check",
@@ -364,8 +364,19 @@ write_notes <- function(notes_path, config, cell_df, raw_slope_df, curve_slope_d
 kv_cli <- parse_kv_args(commandArgs(trailingOnly = TRUE))
 kv <- if (length(kv_cli) == 0) run_cfg else utils::modifyList(run_cfg, kv_cli)
 
+# Resolve paths from this distributed script, including when invoked at repo root.
+script_arg <- grep("^--file=", commandArgs(), value = TRUE)
+source_file <- if (length(sys.frames())) sys.frames()[[1]]$ofile else NULL
+script_path <- if (length(script_arg)) gsub("~+~", " ", sub("^--file=", "", script_arg[1]), fixed = TRUE) else source_file
+if (is.null(script_path)) {
+  candidates <- c("run_phase_transition.R", "Code/Simulation/Rates_Figure2/run_phase_transition.R")
+  script_path <- candidates[file.exists(candidates)][1]
+}
+script_dir <- dirname(normalizePath(script_path, mustWork = TRUE))
 if (!is.null(kv$project_dir) && nzchar(as.character(kv$project_dir))) {
   setwd(as.character(kv$project_dir))
+} else {
+  setwd(script_dir)
 }
 
 default_n_vec <- c(20L, 30L, 40L, 50L, 70L, 100L, 150L, 200L)
@@ -388,8 +399,8 @@ outdir <- kv$outdir %||% "outputs"
 label <- kv$label %||% "densegrid"
 mod_script <- detect_mod_script(kv$mod_script)
 t_design <- kv$t_design %||% "random"
-latent <- as_bool(kv$latent, TRUE)
-methodXi <- as_method_or_null(kv$methodXi %||% "CE")
+latent <- as_bool(kv$latent, FALSE)
+methodXi <- as_method_or_null(kv$methodXi %||% "IN")
 decayR <- as_num_or_default(kv$decayR, 1)
 eps_u <- as_num_or_default(kv$eps_u, 0.05)
 u_cap <- as_num_or_default(kv$u_cap, 0.95)
@@ -416,7 +427,7 @@ if (t_grid_len < 2) stop("t_grid_len must be >= 2.")
 
 t_grid_out <- seq(0, 1, length.out = t_grid_len)
 a_poly <- 2 * decayR
-theoretical_slope <- -(a_poly - 1) / (3 * a_poly + 1)
+theoretical_slope <- -(a_poly - 1) / (3 * a_poly + 2)
 
 check_env <- new.env(parent = globalenv())
 sys.source(mod_script, envir = check_env)
@@ -707,8 +718,8 @@ config <- list(
 saveRDS(config, resolve_outfile(outdir, kv$config_file, paste0("run_config_", label, ".rds")))
 
 note_lines <- c(
-  "- This run writes versioned outputs so the earlier sparse-grid files remain available for comparison.",
-  "- The main dense-grid plot focuses on `N <= 10` so that small-N curvature is visible and the earlier `N = 20` flattening does not dominate the figure."
+  "- Versioned outputs preserve the archived latent-CE results for comparison.",
+  "- The original n grid, m, seeds, and 200 replications are retained; N = 20 is added as a further density check. All configured cells are reported, including any flattening."
 )
 
 write_notes(
@@ -722,7 +733,10 @@ write_notes(
 )
 
 session_lines <- capture.output(sessionInfo())
-writeLines(session_lines, con = session_path)
+writeLines(c(session_lines, paste("fdapace version:", utils::packageVersion("fdapace"))), con = session_path)
+code_paths <- c(file.path(script_dir, "run_phase_transition.R"), normalizePath(mod_script))
+write.csv(data.frame(file = basename(code_paths), md5 = unname(tools::md5sum(code_paths))),
+          file.path(outdir, "input_code_md5.csv"), row.names = FALSE)
 
 end_time <- Sys.time()
 cat(sprintf("Finished at %s\n", format(end_time, tz = Sys.timezone(), usetz = TRUE)))

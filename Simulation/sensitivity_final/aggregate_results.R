@@ -12,7 +12,7 @@ get_script_dir <- function() {
   full_args <- commandArgs(trailingOnly = FALSE)
   file_arg <- grep("^--file=", full_args, value = TRUE)
   if (length(file_arg) > 0L) {
-    script_path <- sub("^--file=", "", file_arg[1L])
+    script_path <- gsub("~+~", " ", sub("^--file=", "", file_arg[1L]), fixed = TRUE)
     return(dirname(normalizePath(script_path, mustWork = TRUE)))
   }
   normalizePath(getwd(), mustWork = TRUE)
@@ -142,12 +142,18 @@ mode <- tolower(kv$mode %||% "full")
 if (!mode %in% c("smoke", "full")) stop("mode must be smoke or full.")
 strict <- parse_bool(kv$strict, TRUE)
 write_table <- parse_bool(kv$write_table, mode == "full")
+methodXi <- trimws(kv$methodXi %||% "IN")
+if (!methodXi %in% c("CE", "IN")) stop("methodXi must be CE or IN.")
+latent <- parse_bool(kv$latent, FALSE)
+if (latent && methodXi != "CE") stop("latent=TRUE requires methodXi=CE.")
+run_prefix <- if (latent) paste0(mode, "_latent_CE") else if (methodXi == "IN") paste0(mode, "_IN") else mode
 
 input_dir <- kv$input_dir %||% stop("Required argument: input_dir=PATH")
 if (!dir.exists(input_dir)) stop("Input directory does not exist: ", input_dir)
 input_dir <- normalizePath(input_dir, mustWork = TRUE)
 outdir <- prepare_empty_dir(kv$outdir %||% file.path(input_dir, "aggregated"))
-table_out <- kv$table_out %||% file.path(outdir, "sensitivity_table.tex")
+table_out <- kv$table_out %||% file.path(outdir,
+  if (latent) "sensitivity_table_latent_ce.tex" else if (methodXi == "IN") "sensitivity_table_in.tex" else "sensitivity_table.tex")
 
 expected_reps <- if (!is.null(kv$expected_reps)) as.integer(kv$expected_reps) else if (mode == "smoke") 2L else 200L
 n_vec <- if (!is.null(kv$n_vec)) parse_int_vec(kv$n_vec) else if (mode == "smoke") 20L else c(20L, 50L, 100L, 200L, 400L)
@@ -194,6 +200,7 @@ write_validation <- function() {
   lines <- c(
     "Sensitivity analysis validation",
     paste0("Mode: ", mode),
+    paste0("Estimator: latent=", latent, ", methodXi=", methodXi),
     paste0("Input: ", input_dir),
     paste0("Structural validation: ", if (overall) "PASS" else "FAIL"),
     paste0("Numerical completion: ", numerical_status),
@@ -309,6 +316,9 @@ required_columns <- c(
   "baseline_norm_sd", "baseline_norm_max_rel_dev", "option_user_bw_mu",
   "option_user_bw_cov", "fpca_data_type", "fpca_method_bw_mu",
   "fpca_method_bw_cov", "fpca_method_mu_cov_est", "fpca_method_xi",
+  "diagnostic_n_obs_total", "diagnostic_kappa", "diagnostic_u_cap",
+  "diagnostic_max_abs_U_raw", "diagnostic_frac_abs_U_raw_gt1",
+  "diagnostic_max_abs_U_used", "diagnostic_Z_cap", "diagnostic_max_abs_Z_used",
   "data_warning", "truth_warning", "fit_warning", "fdapace_version",
   "dependency_md5", "r_version", "host", "slurm_job_id", "slurm_array_task_id"
 )
@@ -328,7 +338,10 @@ numeric_columns <- c(
   "beta_b_lower", "beta_b_upper", "t_grid_len", "xgrid_len", "generating_K",
   "seed_base", "pooled_time_range", "kappa_true", "baseline_norm_min",
   "baseline_norm_mean", "baseline_norm_max", "baseline_norm_sd",
-  "baseline_norm_max_rel_dev", "option_user_bw_mu", "option_user_bw_cov"
+  "baseline_norm_max_rel_dev", "option_user_bw_mu", "option_user_bw_cov",
+  "diagnostic_n_obs_total", "diagnostic_kappa", "diagnostic_u_cap",
+  "diagnostic_max_abs_U_raw", "diagnostic_frac_abs_U_raw_gt1",
+  "diagnostic_max_abs_U_used", "diagnostic_Z_cap", "diagnostic_max_abs_Z_used"
 )
 for (name in numeric_columns) raw[[name]] <- suppressWarnings(as.numeric(raw[[name]]))
 for (name in c("ok", "is_default", "user_bw_supplied", "latent")) {
@@ -342,7 +355,7 @@ run_ids <- unique(raw$run_id)
 expected_rows <- expected_reps * length(n_vec) * length(N_vec) * length(m_vec) *
   length(kernels) * length(bw_multipliers)
 add_check("single_run_id", length(run_ids) == 1L, paste(run_ids, collapse = ","))
-add_check("run_id_mode", length(run_ids) == 1L && grepl(paste0("^", mode, "_[0-9]+$"), run_ids),
+add_check("run_id_mode", length(run_ids) == 1L && grepl(paste0("^", run_prefix, "_[0-9]+$"), run_ids),
           if (length(run_ids)) run_ids[1L] else "none")
 add_check("setting_1_only", length(unique(raw$setting)) == 1L && unique(raw$setting) == 1,
           paste(unique(raw$setting), collapse = ","))
@@ -431,7 +444,7 @@ add_check("requested_bandwidth_formula", bandwidth_formula_ok,
 
 fixed_ok <-
   all(raw$mode == mode) && all(raw$setting_label == "Setting 1") &&
-  all(!raw$latent) && all(raw$methodXi == "CE") && all(raw$methodMuCovEst == "smooth") &&
+  all(raw$latent == latent) && all(raw$methodXi == methodXi) && all(raw$methodMuCovEst == "smooth") &&
   all(close_vec(raw$eps_u, 0.05)) && all(close_vec(raw$u_cap, 0.95)) &&
   all(close_vec(raw$Z_cap, 8)) && all(close_vec(raw$decayR, 1)) &&
   all(close_vec(raw$beta_a_lower, 0.6)) && all(close_vec(raw$beta_a_upper, 3)) &&
@@ -446,7 +459,7 @@ add_check("row_scientific_provenance", fixed_ok, "All fixed DGP, estimator, pack
 
 slurm_ids <- unique(raw$slurm_job_id)
 slurm_ok <- length(slurm_ids) == 1L && nzchar(slurm_ids) &&
-  length(run_ids) == 1L && identical(run_ids, paste0(mode, "_", slurm_ids)) &&
+  length(run_ids) == 1L && identical(run_ids, paste0(run_prefix, "_", slurm_ids)) &&
   all(is.na(raw$slurm_array_task_id) | !nzchar(raw$slurm_array_task_id))
 add_check("slurm_identity", slurm_ok, "Row Slurm identity must be constant, nonempty, non-array, and agree with run_id.")
 
@@ -466,8 +479,8 @@ if (config_readable) {
     identical(as.integer(cfg$m_vec), as.integer(m_vec)) &&
     identical(as.character(cfg$kernels), kernels) &&
     same_numeric(cfg$bw_multipliers, bw_multipliers) &&
-    identical(as.integer(cfg$seed_base), 2000L) && identical(cfg$latent, FALSE) &&
-    identical(as.character(cfg$methodXi), "CE") &&
+    identical(as.integer(cfg$seed_base), 2000L) && identical(cfg$latent, latent) &&
+    identical(as.character(cfg$methodXi), methodXi) &&
     identical(as.character(cfg$methodMuCovEst), "smooth") && same_numeric(cfg$decayR, 1) &&
     same_numeric(cfg$beta_a, c(0.6, 3)) && same_numeric(cfg$beta_b, c(0.6, 3)) &&
     identical(as.character(cfg$t_design), "random") && same_numeric(cfg$eps_u, 0.05) &&
@@ -526,9 +539,36 @@ actual_ok <- all(!successful | (
     close_vec(raw$option_user_bw_mu, raw$requested_bw_mu, 1e-7) &
     close_vec(raw$option_user_bw_cov, raw$requested_bw_cov, 1e-7) &
     raw$fpca_data_type == "Sparse" & raw$fpca_method_mu_cov_est == "smooth" &
-    raw$fpca_method_xi == "CE"
+    raw$fpca_method_xi == methodXi
 ))
 add_check("returned_fit_contract", actual_ok, "Successful fits must return the requested kernel/bandwidth and fixed FPCA options.")
+
+## Historical direct-U runs lack fit_latent, but retain transformation diagnostics.
+fit_latent_ok <- if ("fit_latent" %in% names(raw)) {
+  all(toupper(as.character(raw$fit_latent[successful])) == as.character(latent))
+} else !latent
+add_check("returned_latent_contract", fit_latent_ok,
+          "Successful fits must report the requested latent mode; historical direct-U runs may omit fit_latent.")
+transform_ok <- all(
+  close_vec(raw$diagnostic_n_obs_total[successful], raw$n[successful] * raw$N[successful]) &
+  close_vec(raw$diagnostic_kappa[successful], raw$kappa_true[successful]) &
+  close_vec(raw$diagnostic_u_cap[successful], raw$u_cap[successful]) &
+  is.finite(raw$diagnostic_max_abs_U_raw[successful]) & raw$diagnostic_max_abs_U_raw[successful] >= 0 &
+  is.finite(raw$diagnostic_frac_abs_U_raw_gt1[successful]) &
+  raw$diagnostic_frac_abs_U_raw_gt1[successful] >= 0 & raw$diagnostic_frac_abs_U_raw_gt1[successful] <= 1 &
+  is.finite(raw$diagnostic_max_abs_U_used[successful]) &
+  raw$diagnostic_max_abs_U_used[successful] >= 0 &
+  raw$diagnostic_max_abs_U_used[successful] <= raw$u_cap[successful] + 1e-12
+) && if (latent) {
+  all(close_vec(raw$diagnostic_Z_cap[successful], raw$Z_cap[successful]) &
+      is.finite(raw$diagnostic_max_abs_Z_used[successful]) &
+      raw$diagnostic_max_abs_Z_used[successful] >= 0 &
+      raw$diagnostic_max_abs_Z_used[successful] <= raw$Z_cap[successful] + 1e-12)
+} else {
+  all(is.na(raw$diagnostic_Z_cap[successful]) & is.na(raw$diagnostic_max_abs_Z_used[successful]))
+}
+add_check("returned_transformation_diagnostics", transform_ok,
+          "Successful fits must use the recorded observations, scale, and U cap, with Z cap 8 for latent fits and inactive Z diagnostics otherwise.")
 
 baseline_columns <- c("baseline_norm_min", "baseline_norm_mean", "baseline_norm_max",
                       "baseline_norm_sd", "baseline_norm_max_rel_dev")
@@ -635,7 +675,7 @@ warning_rows <- raw[warning_any, c("run_id", "rep", "n", "N", "m", "kernel",
                                   "bw_multiplier", warning_columns), drop = FALSE]
 atomic_write_csv(warning_rows, file.path(outdir, "warning_rows.csv"))
 
-summary_columns <- c("run_id", "setting", "kernel", "bw_multiplier", "config_id", "n", "N", "m")
+summary_columns <- c("run_id", "setting", "latent", "methodXi", "kernel", "bw_multiplier", "config_id", "n", "N", "m")
 summary_by_cell <- group_apply(raw, summary_columns, function(d) {
   ok <- d$ok & is.finite(d$imse) & is.finite(d$imse_sq)
   data.frame(
@@ -702,7 +742,7 @@ paired_summary <- group_apply(paired, summary_columns, function(d) {
 paired_summary <- sort_results(paired_summary)
 atomic_write_csv(paired_summary, file.path(outdir, "paired_summary_by_cell.csv"))
 
-across_columns <- c("run_id", "setting", "kernel", "bw_multiplier", "config_id")
+across_columns <- c("run_id", "setting", "latent", "methodXi", "kernel", "bw_multiplier", "config_id")
 summary_across_cells <- group_apply(paired_summary, across_columns, function(d) {
   rel <- d$relative_change_pct
   valid <- is.finite(rel)
@@ -731,9 +771,10 @@ summary_across_cells <- group_apply(paired_summary, across_columns, function(d) 
 summary_across_cells <- sort_results(summary_across_cells)
 atomic_write_csv(summary_across_cells, file.path(outdir, "summary_across_cells.csv"))
 
-representative_abs <- summary_by_cell[summary_by_cell$n == 100 & summary_by_cell$N == 5 &
+representative_N <- if (methodXi == "IN") 20L else 5L
+representative_abs <- summary_by_cell[summary_by_cell$n == 100 & summary_by_cell$N == representative_N &
                                         summary_by_cell$m == 200, , drop = FALSE]
-representative_pair <- paired_summary[paired_summary$n == 100 & paired_summary$N == 5 &
+representative_pair <- paired_summary[paired_summary$n == 100 & paired_summary$N == representative_N &
                                         paired_summary$m == 200, , drop = FALSE]
 if (mode == "full") {
   representative_ok <- nrow(representative_abs) == 15L && nrow(representative_pair) == 15L
@@ -742,7 +783,7 @@ if (mode == "full") {
                     nrow(representative_abs), nrow(representative_pair)))
 }
 
-failures_by_config <- group_apply(raw, c("run_id", "setting", "kernel", "bw_multiplier", "config_id"),
+failures_by_config <- group_apply(raw, c("run_id", "setting", "latent", "methodXi", "kernel", "bw_multiplier", "config_id"),
                                   function(d) data.frame(
                                     fits_planned = nrow(d),
                                     fits_ok = sum(d$ok),
